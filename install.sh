@@ -268,7 +268,7 @@ fi
 
 # Keep only the newest few copies of replaced files.
 if [ "$(dirname "$BACKUP_DIR")" = "$BACKUP_ROOT" ] && [ -d "$BACKUP_ROOT" ]; then
-  ls -1d "$BACKUP_ROOT"/*/ 2>/dev/null | sort -r | tail -n +$((KEEP_BACKUPS + 1)) | while read -r old; do rm -rf "$old"; done
+  find "$BACKUP_ROOT" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort -r | tail -n +$((KEEP_BACKUPS + 1)) | while read -r old; do rm -rf "$old"; done
 fi
 
 # What tether needs at run time (it also looks in ~/.local/bin, /opt/homebrew/bin and /usr/local/bin).
