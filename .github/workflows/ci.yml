@@ -1,0 +1,20 @@
+name: tests
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Unit tests (no Herdr needed)
+        run: python3 -m unittest discover -s tests
+      - name: Shell syntax
+        run: bash -n install.sh && bash -n release.sh && bash -n sync.sh && bash -n test.sh && sh -n get.sh
+      - name: ShellCheck
+        if: matrix.os == 'ubuntu-latest'
+        run: shellcheck install.sh get.sh release.sh

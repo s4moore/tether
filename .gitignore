@@ -1,0 +1,6 @@
+gpui-kit.d.ts
+jsconfig.json
+*.bak*
+.DS_Store
+backups/
+dist/

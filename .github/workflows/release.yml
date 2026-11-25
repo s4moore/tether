@@ -1,0 +1,21 @@
+name: release
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tag matches VERSION
+        run: test "v$(cat VERSION)" = "${GITHUB_REF_NAME}"
+      - name: Unit tests
+        run: python3 -m unittest discover -s tests
+      - name: Build the release files
+        run: ./release.sh
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* get.sh --title "tether $(cat VERSION)" --generate-notes
