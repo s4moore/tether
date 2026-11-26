@@ -88,9 +88,12 @@ export default class Spaces extends View {
   }
 
   touchActive() {
-    const id = spaces().find((s) => s.active)?.id;
-    if (!id || id === this.touched) return;
-    this.touched = id;
+    // Also when the active space is renamed: tether keeps the name a closed space is listed (and reopened) under.
+    const active = spaces().find((s) => s.active);
+    const id = active?.id;
+    const key = id ? `${id}\u0000${active.name}` : null;
+    if (!id || key === this.touched) return;
+    this.touched = key;
     exec(TETHER(), ["touch", id]).catch(() => {});
   }
 

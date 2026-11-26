@@ -113,7 +113,7 @@ Environment
                      default: "auto" in config.json
 """
 
-__version__ = "0.1.0"  # keep in step with the VERSION file (tests check it)
+__version__ = "0.1.1"  # keep in step with the VERSION file (tests check it)
 
 import ast
 import concurrent.futures
@@ -1592,12 +1592,32 @@ def running_agents():
     return found
 
 
+def sync_names(data, live, only=None):
+    """Copy the current names of live spaces and tabs into the links tether keeps for them, so a rename
+    made in Herdr is not lost: a closed space is shown, and reopened, under the name it last had. Only
+    spaces that already have links; returns True if anything changed."""
+    changed = False
+    for s in live:
+        rec = data.get(s.get("id"))
+        if (only and s.get("id") != only) or not isinstance(rec, dict) or not (rec.get("terminals") or rec.get("agents")):
+            continue
+        if s.get("name") and rec.get("name") != s["name"]:
+            rec["name"], changed = s["name"], True
+        tabs = {t.get("id"): t.get("name") for t in s.get("tabs", [])}
+        for term in (rec.get("terminals") or {}).values():
+            if tabs.get(term.get("tab")) and term.get("tab_name") != tabs[term["tab"]]:
+                term["tab_name"], changed = tabs[term["tab"]], True
+    return changed
+
+
 def adopt(space_id=None):
     """Link agents running in herdr terminals that tether does not know yet (never changes a link
-    that exists). Returns [(space name, tab name, agent, session)] for what it linked."""
+    that exists), and keep the stored space and tab names current. Returns [(space name, tab name,
+    agent, session)] for what it linked."""
     live = herdr_ls()
     adopted = []
     with State() as st:
+        renamed = sync_names(st.data, live, space_id)
         for r in running_agents():
             hit = find_terminal(live, r["terminal"])
             if not hit:
@@ -1620,7 +1640,7 @@ def adopt(space_id=None):
                 "tab": tab.get("id") or "", "tab_name": tab.get("name") or "",
                 "created": now(), "last_used": now(), "pid": r["pid"], "pid_started": _started(r["pid"])}
             adopted.append((rec["name"], tab.get("name") or "", r["agent"], r["session"]))
-        if adopted:
+        if adopted or renamed:
             st.save()
     return adopted
 

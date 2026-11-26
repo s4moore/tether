@@ -941,6 +941,20 @@ class Forking(TetherTestCase):
         self.assertEqual(terms["t2"]["session"], SESSION2)
         self.assertNotIn("t3", terms)
 
+    def test_a_rename_in_herdr_reaches_the_stored_space_and_tab_names(self):
+        self.write_state({"spLIVE": {"name": "old", "terminals": {"t1": link(session=SESSION, tab="tab1", tab_name="1")}},
+                          "spOTHER": {"name": "other", "terminals": {"t9": link(session=SESSION2, tab="tabX", tab_name="x")}}})
+        live = [{"id": "spLIVE", "name": "renamed", "tabs": [{"id": "tab1", "name": "work", "terminals": [{"terminal": "t1"}]}]},
+                {"id": "spOTHER", "name": "other renamed", "tabs": [{"id": "tabX", "name": "x2", "terminals": [{"terminal": "t9"}]}]}]
+        with mock.patch.object(tether, "herdr_ls", return_value=live), mock.patch.object(tether, "running_agents", return_value=[]):
+            tether.adopt("spLIVE")
+        data = self.read_state()
+        self.assertEqual((data["spLIVE"]["name"], data["spLIVE"]["terminals"]["t1"]["tab_name"]), ("renamed", "work"))
+        self.assertEqual(data["spOTHER"]["name"], "other", "adopt for one space leaves the others alone")
+        with mock.patch.object(tether, "herdr_ls", return_value=live), mock.patch.object(tether, "running_agents", return_value=[]):
+            tether.adopt()
+        self.assertEqual(self.read_state()["spOTHER"]["name"], "other renamed")
+
     def test_adopt_runs_on_space_switch_and_backup_but_never_raises(self):
         os.environ.pop("TETHER_NO_ADOPT")
         with mock.patch.object(tether, "adopt", return_value=[]) as ad:
