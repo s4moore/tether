@@ -228,7 +228,7 @@ are rewritten on every start; read them, don't edit them). `hc --skill` and `her
 print the manuals. Mods go in `mods/` and are checked with `herdr-app check <mod folder>`.
 herdr mods that use tether (in `~/.config/herdr-app/mods/`, layout `tether`): `tether-spaces` (sidebar; clock
 button opens `tether-history`, archive button opens `tether-backups`, right-click opens `tether-menu`),
-`tether-new-space`, `tether-history` (closed spaces only, click to reopen, trash to delete; deleted spaces are in Backups), `tether-menu` (a copy of the stock `menu`: Close does not
-ask; adds Fork, Back up now, Export… and Delete, which has no dialog: it is recoverable), `tether-search` (the magnifier: search conversations by what was said; Search words (free) or Search with AI, either one first; click a result to expand its matching text with the matches highlighted), `tether-backups` (the Backups popup and the Export dialog), `tether-tabs` and `tether-new-menu` (clones of the
+`tether-new-space`, `tether-history` (closed spaces only, click to reopen, the archive icon archives it (`tether delete`); archived spaces are in Backups), `tether-menu` (a copy of the stock `menu`: Close does not
+ask; adds Fork, Back up now, Export… and Archive, which has no dialog: it is `tether delete`, recoverable), `tether-search` (the magnifier: search conversations by what was said; Search words (free) or Search with AI, either one first; click a result to expand its matching text with the matches highlighted), `tether-backups` (the Backups popup and the Export dialog), `tether-tabs` and `tether-new-menu` (clones of the
 stock `tabs` and `new-menu`: the "+" at the top right starts Claude Code and Copilot through tether).
 Overlay roots need an explicit height; `size_full()` collapses to the header in a popup.

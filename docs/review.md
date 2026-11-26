@@ -37,7 +37,7 @@ Why tether is built the way it is, what has been checked, and where it can let y
 
 ## Delete, fork, adopt
 
-- **Delete is one step and recoverable:** back up, then unlink. The conversation is restored with *Restore & open* in the
+- **Delete (shown as Archive in the UI) is one step and recoverable:** back up, then unlink. The conversation is restored with *Restore & open* in the
   Backups popup or `tether undelete`. Permanent deletion is explicit: the bin on a deleted space's archive row, or
   `tether delete --sessions` (which removes the agent's copy and the backup copy). Until then a deleted conversation exists
   twice on disk (the agent's folder and the backup); for privacy, wipe it from the archive.
@@ -91,8 +91,8 @@ Why tether is built the way it is, what has been checked, and where it can let y
 1. **Closed spaces come back with agent tabs only.** Plain shells (a dev server tab), splits and layout are not stored.
 2. **Tab order after reopening follows the terminal address as text** (`t10` before `t9`), not the original tab order.
 3. **The "+" in the sidebar header always starts Claude**; the "+" in the tab bar offers Claude and Copilot.
-4. **Close and Delete in the space menu do not ask.** Closing a space with a running dev server or build needs no confirmation;
-   Delete is recoverable.
+4. **Close and Archive in the space menu do not ask.** Closing a space with a running dev server or build needs no confirmation;
+   Archive is recoverable.
 5. **macOS only in practice.** Import in the UI uses `osascript`, adopt uses `ps eww`, and Linux is untested.
 6. **A path containing `'` breaks the `tether resume` line typed into terminals** (`open`, reopen), and `hc send` failures only
    print a warning.

@@ -157,7 +157,7 @@ class Bootstrap(Sandbox):
         self.assertIn("checking the checksum", r.stdout)
         self.assertTrue(os.access(os.path.join(self.bin, "tether"), os.X_OK))
         out = subprocess.run([os.path.join(self.bin, "tether"), "--version"], capture_output=True, text=True).stdout
-        self.assertEqual(out.strip(), "tether 0.1.1")
+        self.assertEqual(out.strip(), "tether 0.1.2")
 
     def test_get_sh_installs_nothing_when_the_checksum_is_wrong(self):
         r = self.run_get(self.release(tamper=True))

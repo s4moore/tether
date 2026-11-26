@@ -47,16 +47,16 @@ export default class SpaceHistory extends View {
     }).catch((e) => notify({ title: `Could not reopen “${row.name}”`, body: String(e?.message ?? e), level: "error" }));
   }
 
-  // Delete a closed space: unlink it (tether backs it up first, the agents' files stay), so it moves to the
+  // Archive a closed space: unlink it (tether backs it up first, the agents' files stay), so it moves to the
   // archive (Backups: Restore & open). Nothing to confirm: it is recoverable.
   del(row, cx) {
     cx.spawn(async (cx) => {
       try {
         const r = await exec(TETHER(), ["delete", "--id", row.id, "-y"], { timeout: 60000 });
         if (r.code !== 0) throw new Error((r.stderr || r.stdout).trim());
-        notify({ title: `Deleted “${row.name}”`, body: "Bring it back from the archive button (Backups): Restore & open.", level: "success" });
+        notify({ title: `Archived “${row.name}”`, body: "Bring it back from the archive button (Backups): Restore & open.", level: "success" });
       } catch (e) {
-        notify({ title: `Could not delete “${row.name}”`, body: String(e?.message ?? e).slice(0, 300), level: "error" });
+        notify({ title: `Could not archive “${row.name}”`, body: String(e?.message ?? e).slice(0, 300), level: "error" });
       }
       this.load(cx);
     });
@@ -85,10 +85,10 @@ export default class SpaceHistory extends View {
         .child(div().flex_none().text_size(11).text_color(t.dim).child(ago(row.last_used)))
         .child(div().id(`sh-del-${row.id}`).size(24).flex_none().flex().items_center().justify_center().rounded(6)
           .text_color(t.dim).cursor_pointer().hover((s) => s.bg(t.hover).text_color(t.blocked))
-          .tooltip("Delete this space (recoverable from the archive)")
+          .tooltip("Archive this space (restore it from the archive button)")
           .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
           .on_click((_e, cx) => { cx.stop_propagation(); this.del(row, cx); })
-          .child(svg("mods/tether-history/trash.svg").size(14)));
+          .child(svg("mods/workspace-chrome/archive.svg").size(14)));
     };
     return v_flex().id("space-history").track_focus(this.handle).on_key_down((e, cx) => this.key(e, cx))
       .w_full().h(380).min_h(0).p(8).bg(t.popover).text_color(t.foreground)
@@ -98,7 +98,7 @@ export default class SpaceHistory extends View {
       .child(v_flex().id("space-history-list").flex_1().min_h(0).overflow_y_scrollbar().gap(2)
         .when(rows === null, (el) => el.child(div().p(10).text_size(12).text_color(t.dim).child("Loading…")))
         .when(rows !== null && this.error, (el) => el.child(div().p(10).text_size(12).text_color(t.blocked).child(`Could not read tether: ${this.error}`)))
-        .when(rows !== null && !this.error && rows.length === 0, (el) => el.child(div().p(10).text_size(12).text_color(t.dim).child("No closed spaces with a linked session yet. Spaces you deleted are in the archive button (Backups).")))
+        .when(rows !== null && !this.error && rows.length === 0, (el) => el.child(div().p(10).text_size(12).text_color(t.dim).child("No closed spaces with a linked session yet. Spaces you archived are in the archive button (Backups).")))
         .children((rows ?? []).map(line)));
   }
 }

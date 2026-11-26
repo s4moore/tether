@@ -176,7 +176,7 @@ export default class TetherSearch extends View {
     const canSearch = idle && this.text.trim() !== "" && this.scopeList().length > 0;
     const haveRows = Boolean(rows && rows.length > 0);
     const pill = (state) => div().flex_none().px(6).py(1).rounded(5).border_1().border_color(t.border).text_size(10)
-      .text_color(state === "deleted" ? t.blocked : t.dim).child(state);
+      .text_color(state === "deleted" ? t.blocked : t.dim).child(state === "deleted" ? "archived" : state);
     // The words that matched: the ones the search used, else what was typed.
     const terms = m?.terms?.length ? m.terms : this.text.toLowerCase().split(/\s+/).filter(Boolean);
     const line = (r) => {
@@ -231,9 +231,9 @@ export default class TetherSearch extends View {
         .child(div().text_size(11.5).text_color(t.dim).child("Search in"))
         .child(this.checkbox("open", "Open spaces"))
         .child(this.checkbox("closed", "Closed spaces"))
-        .child(this.checkbox("deleted", "Deleted spaces")))
+        .child(this.checkbox("deleted", "Archived spaces")))
       .when(this.scopes.deleted, (el) => el.child(div().text_size(11).text_color(t.blocked).child(
-        "Deleted spaces are searched in the backup. Their conversations are never in an open or closed space, so the AI steps may read more text: higher token cost.")))
+        "Archived spaces are searched in the backup. Their conversations are never in an open or closed space, so the AI steps may read more text: higher token cost.")))
       .child(h_flex().gap(8)
         .child(this.button("ts-search", "Search words", "primary", canSearch, (_e, cx) => this.search(cx), true))
         .child(this.button("ts-ai", est && m?.tier === 1 ? `Search with AI · ~${tokens(est.rank_tokens)} tokens` : "Search with AI", "plain", canSearch, (_e, cx) => this.ai(cx), true)))

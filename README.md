@@ -29,7 +29,7 @@ curl -fsSL https://raw.githubusercontent.com/s4moore/tether/main/get.sh | sh
 
 Quit Herdr first: it rewrites its `shared.json` when it quits, and the installer refuses to run while it is
 open. The script downloads the release tarball, **checks it against the published SHA-256**, and runs the
-installer from it. For a specific version: `curl -fsSL .../get.sh | TETHER_VERSION=0.1.1 sh`.
+installer from it. For a specific version: `curl -fsSL .../get.sh | TETHER_VERSION=0.1.2 sh`.
 
 **Prefer to read it first?** Piping a script into a shell asks you to trust it. Either read `get.sh`
 ([source](get.sh)) and `install.sh`, or do it by hand:
@@ -133,9 +133,9 @@ problem.
 | `herdr/mods/tether-spaces` | `~/.config/herdr-app/mods/` | Clone of Herdr's `spaces` mod: the sidebar list, a "+" that starts a tether Claude space, a history button, a backups button, and `touch` on every space switch |
 | `herdr/mods/tether-new-space` | same | Name dialog for a new space; runs `tether claude` in it |
 | `herdr/mods/tether-history` | same | Closed spaces tether still has sessions for; click to reopen |
-| `herdr/mods/tether-menu` | same | Clone of `menu`: space context menu; Close does not ask; adds Fork, Back up now, Export… and Delete (no dialog: it unlinks after a backup, so the archive can bring it back) |
+| `herdr/mods/tether-menu` | same | Clone of `menu`: space context menu; Close does not ask; adds Fork, Back up now, Export… and **Archive** (no dialog: it takes a backup and unlinks the space, the same as `tether delete`, so the archive button can bring it back) |
 | `herdr/mods/tether-tabs`, `tether-new-menu` | same | Clones of Herdr's `tabs` and `new-menu`: the "+" at the top right starts Claude Code and Copilot **through tether**, so the tab is linked to its session from the first moment. Other agents start as before |
-| `herdr/mods/tether-search` | same | New: the Search popup (magnifier in the spaces header): a text box, checkboxes for open / closed / deleted spaces, *Search words* and *Search with AI* (either one straight away), an *Open* button per result, and a click anywhere else on a result expands it to all its matching text (up to three snippets) with the matched words highlighted |
+| `herdr/mods/tether-search` | same | New: the Search popup (magnifier in the spaces header): a text box, checkboxes for open / closed / archived (deleted) spaces, *Search words* and *Search with AI* (either one straight away), an *Open* button per result, and a click anywhere else on a result expands it to all its matching text (up to three snippets) with the matched words highlighted |
 | `herdr/mods/tether-backups` | same | New: the Backups popup (status, Back up all, Restore, Import) and the per-space Export dialog |
 | `herdr/layouts/tether.json` | `.../layouts/` | Clone of the `main` layout that uses `tether-spaces` |
 | `install.sh`, `get.sh` | | The installer (also `--uninstall`), and the bootstrap behind the one-line install |
@@ -174,7 +174,7 @@ tether config home_dir <folder>   new agents started from your home folder start
 
 Full reference: `tether --help` or `docs/tether-help.txt`. In Herdr: the "+" in the sidebar header makes a
 space with a Claude session (Shift-click: a plain space), the clock button reopens a closed space, the
-archive button opens **Backups**, and right-click a space for Fork, Back up now, Export… and Delete (Delete needs no dialog: it is recoverable from the archive).
+archive button opens **Backups**, and right-click a space for Fork, Back up now, Export… and Archive (no dialog: it is `tether delete`, recoverable from the archive button; the CLI keeps its older name).
 
 **In the Herdr UI**
 

@@ -1,8 +1,8 @@
 // Modified copy of the "menu" mod that ships with Herdr 0.1.15 (Apache-2.0, https://github.com/herdrdev/herdr-app).
 // Changed for tether; see THIRD-PARTY.md at the top of this repository for the licence and attribution.
 // Context menus (a copy of Herdr's `menu`, for the spaces list): Close here does not ask, and a
-// space also gets Fork, Back up now and Export… (mod tether-backups) and Delete, which asks what to do
-// with its tether sessions: it just deletes (unlink; a backup is taken first), no dialog.
+// space also gets Fork, Back up now and Export… (mod tether-backups) and Archive: it takes a backup and unlinks
+// the space's sessions (`tether delete`), no dialog; the Backups popup (archive button) brings it back.
 // Context menus (Herdr's items). Opened as a popup with
 // props { tab: "pane" | "tab" | "space" | "global", target }.
 // ↑/↓ move, Enter runs, Esc closes. An item is [label, command, args];
@@ -27,9 +27,9 @@ async function forkSpace(a) {
   }
 }
 
-// Delete: unlink the space (tether takes a backup first and leaves the agents' files), closing it first if it is
+// Archive: unlink the space (tether takes a backup first and leaves the agents' files), closing it first if it is
 // open. Recoverable from the archive (Backups: Restore & open). A space with no tether link is just closed.
-async function deleteSpace(a) {
+async function archiveSpace(a) {
   try {
     const r = await exec(`${home()}/.local/bin/tether`, ["delete", "--id", a.id, "-y", "--close"], { timeout: 60000 });
     if (r.code !== 0) {
@@ -41,9 +41,9 @@ async function deleteSpace(a) {
       }
       throw new Error(why);
     }
-    notify({ title: `Deleted “${a.name}”`, body: "Bring it back from the archive button (Backups): Restore & open.", level: "success" });
+    notify({ title: `Archived “${a.name}”`, body: "Bring it back from the archive button (Backups): Restore & open.", level: "success" });
   } catch (e) {
-    notify({ title: `Could not delete “${a.name}”`, body: String(e?.message ?? e).slice(0, 300), level: "error" });
+    notify({ title: `Could not archive “${a.name}”`, body: String(e?.message ?? e).slice(0, 300), level: "error" });
   }
 }
 
@@ -124,7 +124,7 @@ function items(p, git) {
         ["Back up now", "tether.backup", { id: tg.id, name: spaces().find((s) => s.id === tg.id)?.name ?? "" }],
         ["Export…", "tether.export", { id: tg.id, name: spaces().find((s) => s.id === tg.id)?.name ?? "" }],
         ["Close", "space.close", { id: tg.id, confirmed: true }],
-        ["Delete…", "space.delete", { id: tg.id, name: spaces().find((s) => s.id === tg.id)?.name ?? "" }],
+        ["Archive", "space.delete", { id: tg.id, name: spaces().find((s) => s.id === tg.id)?.name ?? "" }],
       ];
     default:
       return [
@@ -139,9 +139,9 @@ function items(p, git) {
 }
 
 function menuIcon(command) {
-  if (command === "space.delete") return "mods/tether-menu/trash.svg";
+  if (command === "space.delete") return "mods/workspace-chrome/archive.svg";
   if (command === "tether.fork") return "mods/workspace-chrome/git-branch.svg";
-  if (command === "tether.backup") return "mods/workspace-chrome/archive.svg";
+  if (command === "tether.backup") return "mods/workspace-chrome/files.svg";
   if (command === "tether.export") return "mods/workspace-chrome/folder.svg";
   const name = command.endsWith(".close") ? "x" : command.endsWith(".rename") ? "square-pen" : command.endsWith(".new") ? "plus" : command === "worktree" ? "git-branch" : command === "app.help" ? "terminal" : command === "app.theme" ? "settings" : command === "pane.split" ? "panel-right" : command === "pane.zoom" ? "square" : "terminal";
   return `mods/workspace-chrome/${name}.svg`;
@@ -178,7 +178,7 @@ export default class Menu extends View {
     if (it[1] === "tether.fork") forkSpace(it[2]);
     else if (it[1] === "tether.backup") backupSpace(it[2]);
     else if (it[1] === "tether.export") openOverlay({ mod: "tether-backups", kind: "dialog", width: 460, height: 270, props: { mode: "export", id: it[2].id, name: it[2].name } });
-    else if (it[1] === "space.delete") deleteSpace(it[2]);
+    else if (it[1] === "space.delete") archiveSpace(it[2]);
     else if (it[1] === "worktree") openOverlay({ mod: "worktree", kind: "dialog", ...(it[2].action === "open" ? { width: 560, height: 480 } : { width: 440, height: 260 }), props: it[2] });
     else run(it[1], it[2]);
   }
