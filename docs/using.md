@@ -25,6 +25,7 @@ tether fork <space>      copy a space into "<name> (fork)": every linked session
 tether undelete [space]  bring back a space you deleted as a closed space (Delete keeps a record in the backup; in the Backups popup, *Restore & open* on its row does this and opens it)
 tether touch <space-id>   record that a space was just used (the spaces list calls this when you switch space; it also links unlinked agents in that space)
 tether doctor            check the install, Herdr, links and backups; each problem comes with its fix
+tether stats             what the local usage log says: how often each feature ran, how long it took, what it cost, how many proposed facts you accepted; `--export` (or Settings → Diagnostics → Share a usage summary…) writes a totals-only summary you can share (see [Configuration](configuration.md#the-usage-log))
 tether config home_dir <folder>   new agents started from your home folder start in this folder instead (default `~/.local/share/tether/home`, created on first use), so Claude stops asking "trust this folder?" (it remembers every folder except home). `--unset` turns it off, `--default` resets it. Sessions already started in home still resume there
 ```
 

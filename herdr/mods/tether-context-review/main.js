@@ -1,7 +1,7 @@
 // Review the facts tether proposes for its context store (`tether context`): from "Learn from this space" in the space
 // menu (opened with props { learn: { id, name } }: it shows the progress, then the facts), from "Review learned facts", or
 // for facts learned in the background when "context_auto" is on. Nothing is saved until you press Accept. It only calls
-// `tether context learn --id <space> --json`, `proposals --json`, `accept --only N`, `reject --only N`, `recent --json` and `undo --only N`
+// `tether context learn --id <space> --json`, `proposals --json`, `accept --only N [--into <topic>]`, `reject --only N`, `recent --json` and `undo --only N`
 // (see `tether --help`). Facts saved without review ("context_auto_accept") are listed below the proposals, each with Undo.
 // Esc closes.
 import { View, div } from "gpui-kit";
@@ -75,12 +75,12 @@ export default class ContextReview extends View {
   }
 
   // Accept or reject one proposal (its number), or all of them. The numbers change after each decision, so the list is reloaded.
-  decide(accept, n, cx) {
+  decide(accept, n, cx, into) {
     this.busy = true;
     cx.notify();
     cx.spawn(async (cx) => {
       try {
-        const r = await exec(TETHER(), ["context", accept ? "accept" : "reject", ...(n ? ["--only", String(n)] : [])], { timeout: 30000 });
+        const r = await exec(TETHER(), ["context", accept ? "accept" : "reject", ...(n ? ["--only", String(n)] : []), ...(into ? ["--into", into] : [])], { timeout: 30000 });
         if (r.code !== 0) throw new Error((r.stderr || r.stdout).trim());
         if (accept) notify({ title: "Saved to your context", body: r.stdout.trim().split("\n")[0].slice(0, 200), level: "success" });
       } catch (e) {
@@ -130,12 +130,14 @@ export default class ContextReview extends View {
     const line = (r) => v_flex().id(`cr-${r.n}`).px(14).py(11).gap(7).flex_none()
       .child(h_flex().gap(6).items_center()
         .child(div().flex_none().px(7).h(18).flex().items_center().rounded(5).bg(t.hover).text_size(10.5).text_color(t.foreground).child(r.topic))
-        .when(r.new_topic, (el) => el.child(div().flex_none().px(7).h(18).flex().items_center().rounded(5).border_1().border_color(t.border).text_size(10.5).text_color(t.dim).child("new topic"))))
+        .when(r.new_topic, (el) => el.child(div().flex_none().px(7).h(18).flex().items_center().rounded(5).border_1().border_color(t.border).text_size(10.5).text_color(t.dim).child("new topic")))
+        .when(Boolean(r.similar), (el) => el.child(div().flex_none().px(7).h(18).flex().items_center().rounded(5).border_1().border_color(t.blocked).text_size(10.5).text_color(t.blocked).child(`similar to ${r.similar}`))))
       .child(div().text_size(13).text_color(t.foreground).child(r.fact))
       .when(r.new_topic && Boolean(r.about), (el) => el.child(div().text_size(11.5).text_color(t.dim).child(r.about)))
       .child(h_flex().gap(8).items_center()
         .child(div().flex_1().min_w(0).truncate().text_size(11).text_color(t.dim).child(r.source ? `From ${r.source}` : ""))
         .child(this.button(`cr-no-${r.n}`, "Reject", "plain", idle, (_e, cx) => this.decide(false, r.n, cx)))
+        .when(Boolean(r.similar), (el) => el.child(this.button(`cr-into-${r.n}`, `File under ${r.similar}`, "plain", idle, (_e, cx) => this.decide(true, r.n, cx, r.similar))))
         .child(this.button(`cr-yes-${r.n}`, "Accept", "primary", idle, (_e, cx) => this.decide(true, r.n, cx))));
     const auto = (r) => h_flex().id(`cr-auto-${r.n}`).px(14).py(9).gap(10).items_center().flex_none()
       .child(div().flex_none().px(7).h(18).flex().items_center().rounded(5).bg(t.hover).text_size(10.5).text_color(t.foreground).child(r.topic))

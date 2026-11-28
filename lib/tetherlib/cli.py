@@ -87,6 +87,13 @@
     tether --version                 print the version of tether
     tether doctor [--json]           check the install, Herdr, links and backups; says how to fix each
                                      problem. Exit status 1 if something needs attention.
+    tether stats [--days N] [--json | --export [--json] [-o file|folder] [-y]]
+                                     what the local usage log says: how often each feature ran, how long it took,
+                                     what it cost, how many proposed facts you accepted. The log holds counts, timings
+                                     and outcomes only, never what was said, and stays on this computer
+                                     (~/.local/state/tether/events.jsonl); `tether config set usage_log off` stops it.
+                                     --export writes a summary you can share: totals and versions only, shown to
+                                     you in full first (with --json it only prints it), never sent anywhere.
     tether config [--json | get <key> | set <key> <value|default> | home_dir [path|--unset|--default]]
                                      show or change settings (the Herdr settings popup, the gear in the
                                      spaces header, does the same): `tether config` lists each with its value
@@ -136,9 +143,10 @@ Environment
   TETHER_CONTEXT_DIR where the context store lives (default: "context_dir" in config.json, else
                      ~/.local/share/tether/context)
   TETHER_CONTEXT_AUTO 1/0: background learning on or off (default: "context_auto" in config.json, off)
+  TETHER_USAGE_LOG     1/0: the local usage log on or off (default: "usage_log" in config.json, on)
   TETHER_CONTEXT_AUTO_ACCEPT  1 lets background learning save plain facts about existing topics without review (undo: tether context undo)
   TETHER_CONTEXT_AGENT agent for background learning: claude or copilot (default: "context_agent" in config.json, else claude)
-  TETHER_CONTEXT_MODEL model for background learning (default: "context_model" in config.json, else haiku)
+  TETHER_CONTEXT_MODEL model for learning, both `context learn` and background learning (default: "context_model" in config.json, else haiku)
   TETHER_DEFAULT_AGENT claude|copilot: the agent the + button starts a new space with (default: "default_agent"
                      in config.json, else claude)
   TETHER_NO_ADOPT=1  never link agents started without tether (see `tether adopt`)
@@ -152,10 +160,11 @@ Environment
 """
 
 import sys
+import time
 
 from tetherlib.core import AGENTS, TetherError
 
-from tetherlib import backups, context, continue_, core, doctor, launch, reading, search, settings, store, workspace
+from tetherlib import backups, context, continue_, core, doctor, launch, reading, search, settings, store, usage, workspace
 
 
 def main(argv):
@@ -218,6 +227,8 @@ def main(argv):
         workspace.open_session(rest)
     elif cmd == "doctor":
         doctor.doctor_cmd(rest)
+    elif cmd == "stats":
+        usage.stats_cmd(rest)
     elif cmd == "config":
         settings.config_cmd(rest)
     elif cmd == "backup":
@@ -236,11 +247,36 @@ def main(argv):
         workspace.open_by_name_or_fail(" ".join(argv))
 
 
+# Commands whose use is worth knowing (which features people use), as a fixed list: what a person typed as a space name is never logged.
+LOGGED_COMMANDS = {"fork", "delete", "undelete", "restore", "export", "import", "open-session", "open", "read", "doctor", "link",
+                   "reset", "continue", "swap", "search", "context", "backup", "adopt", "touch", "stats", "claude", "copilot"}
+SLOW_SECONDS = 1.5   # any logged command slower than this is flagged: the commands that run all the time (touch, adopt) must stay quick
+
+
 def run():
-    """What bin/tether does: run main() on the command line, turning errors into a message and an exit status."""
+    """What bin/tether does: run main() on the command line, turning errors into a message and an exit status. A few commands also leave a
+    line in the usage log: that they ran, how long they took, whether they worked (never their arguments)."""
+    argv = sys.argv[1:]
+    cmd = argv[0] if argv else "menu"
+    t0, outcome = time.time(), "ok"
     try:
-        main(sys.argv[1:])
+        main(argv)
     except TetherError as e:
+        outcome = "error"
         sys.exit(f"tether: {e}")
     except KeyboardInterrupt:
+        outcome = "interrupted"
         sys.exit(130)
+    except SystemExit as e:
+        outcome = "ok" if e.code in (None, 0) else "error"
+        raise
+    finally:
+        seconds = usage.since(t0)
+        # anything that is not a command is a space name (the bare `tether <space>` form): logged as "open", never by name
+        name = cmd if cmd in LOGGED_COMMANDS or cmd in core.COMMANDS or cmd in ("menu", "adopt", "--version", "-V", "version") else "open"
+        if name in LOGGED_COMMANDS:
+            noisy = name in ("touch", "adopt", "claude", "copilot", "search", "context", "backup", "continue", "swap", "stats")
+            # the commands that have their own detailed event, or run constantly, are logged only when they are slow or fail
+            if not noisy or seconds > SLOW_SECONDS or outcome != "ok":
+                usage.record("command", outcome, name=name, seconds=seconds, slow=seconds > SLOW_SECONDS,
+                             permanent=("--sessions" in argv) if name == "delete" else None)

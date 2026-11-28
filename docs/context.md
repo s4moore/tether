@@ -42,4 +42,8 @@ stack.md        - services talk over Kafka; see [[repos]]
   topic, delete one (it asks twice). Edit a fact by editing the Markdown file.
 - **Review**: right-click a space → **Review learned facts** lists what is waiting, with Accept and Reject. Facts saved without review
   (see `context_auto_accept` in [configuration](configuration.md)) are listed below, each with **Undo**.
+- **Topic drift.** The model is shown your topics (with how many facts each holds) and any new topic still waiting for review, and told to use
+  an existing topic whenever a fact fits it even loosely. If it proposes a new topic that resembles an existing one (a word in common in the
+  names, or two in the descriptions: `deploys` next to `deployments`), the review window marks it **similar to** that topic and offers
+  **File under** it (`tether context accept --only N --into <topic>`). Nothing is renamed or merged for you.
 - On the command line: `tether context list [topic]`, `find <words>`, `recent`, `undo --only N`, `remove <topic> --line N`.

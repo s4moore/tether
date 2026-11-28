@@ -6,7 +6,7 @@ import sys
 
 from tetherlib.core import AGENTS, TetherError, config_path, env, load_config, save_config
 
-from tetherlib import ai, backups, context
+from tetherlib import ai, backups, context, usage
 
 
 DEFAULT_HOME_DIR = "~/.local/share/tether/home"
@@ -44,12 +44,14 @@ SETTINGS = (
      "help": "At most every 6 hours, proposes facts from conversations that have grown. You accept each one."},
     {"key": "context_auto_accept", "group": "Context", "label": "Save plain facts without review", "type": "bool", "default": False,
      "env": "CONTEXT_AUTO_ACCEPT", "help": "Background learning saves plain facts about topics you already have. Anything with a command, link or new topic still waits for you. Undo from the review window."},
-    {"key": "context_agent", "group": "Context", "label": "Agent for background learning", "type": "choice", "choices": list(AGENTS),
-     "default": "claude", "env": "CONTEXT_AGENT", "help": "Which agent reads your conversations to propose facts."},
-    {"key": "context_model", "group": "Context", "label": "Model for background learning", "type": "choice", "choices": list(MODEL_CHOICES),
-     "default": "haiku", "env": "CONTEXT_MODEL", "help": "A smaller model costs less; every proposal is reviewed."},
+    {"key": "context_agent", "group": "Context", "label": "Agent for learning", "type": "choice", "choices": list(AGENTS),
+     "default": "claude", "env": "CONTEXT_AGENT", "help": "For Learn from this space and background learning: which agent reads your conversations to propose facts."},
+    {"key": "context_model", "group": "Context", "label": "Model for learning", "type": "choice", "choices": list(MODEL_CHOICES),
+     "default": "haiku", "env": "CONTEXT_MODEL", "help": "For Learn from this space and background learning. A smaller model costs less; every proposal is reviewed."},
     {"key": "search_model", "group": "Context", "label": "Model for AI search", "type": "choice", "choices": list(MODEL_CHOICES),
      "default": "sonnet", "env": "SEARCH_MODEL", "help": "Used by Search with AI."},
+    {"key": "usage_log", "group": "Diagnostics", "label": "Keep a local usage log", "type": "bool", "default": True, "env": "USAGE_LOG",
+     "help": "Counts, timings and outcomes of tether's features on this computer, never what was said. Read it with `tether stats`."},
     {"key": "home_dir", "group": "Folders", "label": "Start folder", "type": "path", "default": DEFAULT_HOME_DIR,
      "env": "HOME_DIR", "help": "Where agents start when opened in your home folder, so Claude does not ask to trust all of it. Change it with `tether config home_dir`."},
     {"key": "backup_dir", "group": "Folders", "label": "Conversation backups", "type": "path", "default": "~/.local/share/tether/backups",
@@ -74,6 +76,8 @@ def setting_row(spec, cfg):
         value = flag.lower() in TRUTHY if flag else bool(cfg.get("auto"))
     elif key == "context_auto":
         value = context.context_auto_on()
+    elif key == "usage_log":
+        value = usage.enabled()
     elif key == "context_auto_accept":
         value = context.context_auto_accept_on()
     elif key == "context_agent":

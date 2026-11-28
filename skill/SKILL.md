@@ -177,6 +177,8 @@ Conversations (they live in each agent's own folder; tether only stores links)
                                    away. Sessions already started in home still resume there.
   tether --version                 print the version
   tether doctor                    check install, Herdr, links, backups; prints the fix for each problem
+  tether stats [--days N] [--json] the local usage log (counts, timings, outcomes; never content): for the user, not for you to act on
+                                   ($TETHER_USAGE_LOG=0 or `tether config set usage_log off` stops it)
   tether export <space> [-o file|folder] [--id X] [--json]
                                    one private .tar.gz with the space's links and conversations
   tether import <file> [--name N] [--json]

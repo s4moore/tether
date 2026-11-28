@@ -9,10 +9,11 @@ import math
 import os
 import re
 import sys
+import time
 
 from tetherlib.core import AGENTS, TetherError, UUID_RE, ago, parse_opts
 
-from tetherlib import ai, backups, herdr, store
+from tetherlib import ai, backups, herdr, store, usage
 
 
 STOPWORDS = frozenset(
@@ -281,7 +282,7 @@ def search_cmd(args):
         limit = int(vals.get("--limit") or 15)
     except ValueError:
         sys.exit("tether: --limit takes a number")
-    model, cost, tier = ai.search_model(), None, 1
+    model, cost, tier, t0 = ai.search_model(), None, 1, time.time()
     docs = search_corpus(scopes)
     terms = query_terms(query)
     rows = lexical_rank(terms, docs, limit)
@@ -302,6 +303,8 @@ def search_cmd(args):
             rest = [r for r in rows if r not in targets]
             rows, tier = sorted(deep + rest, key=lambda r: (r in rest, -r["score"])), 3
     out = [{k: v for k, v in r.items() if not k.startswith("_") and k not in ("path", "chars")} for r in rows]
+    usage.record("search", mode="deep" if "--deep" in flags else "rank" if "--rank" in flags else "words", results=len(out), corpus=len(docs),
+                  fallback=fallback, seconds=usage.since(t0), cost=cost)
     if "--json" in flags:
         print(json.dumps({"query": query, "terms": terms, "scopes": scopes, "tier": tier, "model": model, "cost_usd": cost,
                           "corpus": len(docs), "estimate": estimate, "fallback": fallback, "results": out}))

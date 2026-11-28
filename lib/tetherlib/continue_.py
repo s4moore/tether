@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from datetime import datetime
 from datetime import timedelta
 from datetime import timezone
@@ -11,7 +12,7 @@ from uuid import uuid4
 
 from tetherlib.core import AGENTS, TetherError, env, now, parse_opts, say
 
-from tetherlib import backups, core, herdr, search, store
+from tetherlib import backups, core, herdr, search, store, usage
 
 
 CONTINUE_CAP = 150_000      # characters of conversation carried over: the newest part, whole turns
@@ -236,6 +237,7 @@ def continue_cmd(args):
         where, why = herdr.resolve_where()
         if where is None:
             sys.exit(f"tether: {why}")
+    t0 = time.time()
     done = continue_session(where, words[0] if words else None)
     if done is None:
         return
@@ -256,6 +258,7 @@ def continue_cmd(args):
             "agent": target, "session": done["new"], "cwd": done["cwd"], "tab": (hit[1].get("id") if hit else "") or "", "tab_name": label,
             "created": now(), "last_used": now(), "continued_from": {"agent": done["source"], "session": done["old"], "at": now()}}
         st.save()
+    usage.record("continue", source=done["source"], target=target, messages=done["count"], dropped=done["dropped"], seconds=usage.since(t0))
     say(f"{done['count']} messages carried over from {done['source']} to {target}"
         + (f" ({done['dropped']} older ones left out to fit)" if done["dropped"] else "")
         + f"; the original tab and its {done['source']} session {done['old'][:8]} are untouched")

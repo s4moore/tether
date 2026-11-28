@@ -13,7 +13,7 @@ from uuid import uuid4
 
 from tetherlib.core import AGENTS, TetherError, UUID_RE, ago, env, load_config, now, parse_opts, pick, state_dir
 
-from tetherlib import core, herdr, store, workspace
+from tetherlib import core, herdr, store, usage, workspace
 
 
 def purge_session(agent, session):
@@ -343,7 +343,7 @@ def backup_cmd(args):
         elif not quiet:
             print("nothing to back up: no matching linked spaces")
         return
-    dst = prepare_backup_dir()
+    t0, dst = time.time(), prepare_backup_dir()
     copied = skipped = nbytes = sessions = empty = 0
     manifest_path = os.path.join(dst, "manifest.json")
     try:
@@ -369,6 +369,7 @@ def backup_cmd(args):
     with os.fdopen(fd, "w") as f:
         json.dump(manifest, f, indent=2, sort_keys=True)
     os.replace(tmp, manifest_path)
+    usage.record("backup", sessions=sessions, copied=copied, bytes=nbytes, seconds=usage.since(t0), background=quiet)
     if "--json" in flags:
         print(json.dumps({"sessions": sessions, "copied": copied, "skipped": skipped, "bytes": nbytes,
                           "empty": empty, "dir": dst}))

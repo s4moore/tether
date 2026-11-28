@@ -86,6 +86,13 @@ tether: persistent Claude / Copilot sessions for herdr-app spaces.
     tether --version                 print the version of tether
     tether doctor [--json]           check the install, Herdr, links and backups; says how to fix each
                                      problem. Exit status 1 if something needs attention.
+    tether stats [--days N] [--json | --export [--json] [-o file|folder] [-y]]
+                                     what the local usage log says: how often each feature ran, how long it took,
+                                     what it cost, how many proposed facts you accepted. The log holds counts, timings
+                                     and outcomes only, never what was said, and stays on this computer
+                                     (~/.local/state/tether/events.jsonl); `tether config set usage_log off` stops it.
+                                     --export writes a summary you can share: totals and versions only, shown to
+                                     you in full first (with --json it only prints it), never sent anywhere.
     tether config [--json | get <key> | set <key> <value|default> | home_dir [path|--unset|--default]]
                                      show or change settings (the Herdr settings popup, the gear in the
                                      spaces header, does the same): `tether config` lists each with its value
@@ -135,9 +142,10 @@ Environment
   TETHER_CONTEXT_DIR where the context store lives (default: "context_dir" in config.json, else
                      ~/.local/share/tether/context)
   TETHER_CONTEXT_AUTO 1/0: background learning on or off (default: "context_auto" in config.json, off)
+  TETHER_USAGE_LOG     1/0: the local usage log on or off (default: "usage_log" in config.json, on)
   TETHER_CONTEXT_AUTO_ACCEPT  1 lets background learning save plain facts about existing topics without review (undo: tether context undo)
   TETHER_CONTEXT_AGENT agent for background learning: claude or copilot (default: "context_agent" in config.json, else claude)
-  TETHER_CONTEXT_MODEL model for background learning (default: "context_model" in config.json, else haiku)
+  TETHER_CONTEXT_MODEL model for learning, both `context learn` and background learning (default: "context_model" in config.json, else haiku)
   TETHER_DEFAULT_AGENT claude|copilot: the agent the + button starts a new space with (default: "default_agent"
                      in config.json, else claude)
   TETHER_NO_ADOPT=1  never link agents started without tether (see `tether adopt`)

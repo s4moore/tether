@@ -8,11 +8,11 @@ import shutil
 import subprocess
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from tetherlib.core import AGENTS, TetherError, _json_file, env, load_config, now, parse_opts, say
 
-from tetherlib import ai, reading, search
+from tetherlib import ai, reading, search, usage
 
 
 CONTEXT_INDEX_MAX = 40       # index lines before the index is too long to read cheaply
@@ -223,6 +223,7 @@ def _context_check_run(d, flags):
     fixed = context_fix(d, issues) if "--fix" in flags else []
     if fixed:
         issues = context_check_issues(d)
+    usage.record("job", job="check", issues=len(issues), fixed=len(fixed))
     try:
         with open(os.path.join(d, ".report.json"), "w") as f:
             json.dump({"at": now(), "issues": issues}, f)
@@ -332,6 +333,7 @@ def context_find(args):
     best = max((sc for sc, _ in scored), default=0)
     full = [h for sc, h in scored if sc == len(terms)]
     hits = full or [h for sc, h in sorted(scored, key=lambda x: -x[0]) if sc >= max(1, best)] if best else []
+    usage.record("context.find", terms=len(terms), hits=len(hits), exact=bool(hits) and bool(full))
     if "--json" in flags:
         print(json.dumps(hits[:40]))
         return
@@ -378,6 +380,7 @@ def context_remove(args):
 
 def context_list(args):
     d = context_dir()
+    usage.record("context.list", topic=bool(args) and args[0] != "--json")
     if args and args[0] == "--json":
         index, _ = context_index(d)
         topics = list(index) + [t for t in context_topics(d) if t not in index]
@@ -406,6 +409,17 @@ def context_add(args):
     print(add_fact(context_dir(), words[0], " ".join(words[1:]), vals.get("--source") or "", vals.get("--about") or ""))
 
 
+def store_snapshot(d):
+    """Numbers about the store as it is now (not logged: computed when `tether stats` runs). The index length is the token cost of every lookup."""
+    index, index_lines = context_index(d)
+    topics = context_topics(d)
+    counts = [len(context_facts(d, t)) for t in topics]
+    cutoff = (datetime.now() - timedelta(days=CONTEXT_STALE_DAYS)).date().isoformat()
+    stale = sum(1 for t in topics for _, _, date, _ in context_facts(d, t) if date and date < cutoff)
+    return {"topics": len(topics), "facts": sum(counts), "largest_topic": max(counts, default=0), "index_lines": index_lines,
+            "stale_facts": stale, "waiting": len(context_queue(d)), "saved_without_review": len(context_auto_added(d))}
+
+
 def context_proposals_path(d):
     return os.path.join(d, ".proposals.json")
 
@@ -431,19 +445,58 @@ def context_queue_save(d, ops):
         json.dump({"at": now(), "ops": ops}, f, indent=1)
 
 
+SIMILAR_IGNORE = FIND_STOP | frozenset("read when topic topics user users working about".split())
+
+
+def _words_of(text, drop=SIMILAR_IGNORE):
+    return {_stem(w) for w in re.findall(r"[a-z0-9]+", text.lower()) if w not in drop and len(w) > 2}
+
+
+def _shared(a, b):
+    return sum(_stem_hit(q, b) for q in a)
+
+
+def similar_topic(topic, about, candidates):
+    """The topic in candidates ({name: about}) that a new topic most resembles, or None: a word in common in the names, or two in the
+    descriptions. Used to catch drift (`deploy` next to `deployments`) before it is saved."""
+    name, desc = _words_of(topic.replace("-", " ")), _words_of(about)
+    best, best_score = None, 0
+    for other, other_about in candidates.items():
+        if other == topic:
+            continue
+        in_name = _shared(name, _words_of(other.replace("-", " ")))
+        in_desc = _shared(desc, _words_of(other_about))
+        if (in_name or in_desc >= 2) and 3 * in_name + in_desc > best_score:
+            best, best_score = other, 3 * in_name + in_desc
+    return best
+
+
+def similar_count(d, ops):
+    """How many of these proposed facts name a new topic that resembles another (for the usage log)."""
+    index, _ = context_index(d)
+    candidates = {t: a for t, (_, a) in index.items()}
+    candidates.update({o["topic"]: o.get("about", "") for o in context_queue(d) if o["topic"] not in index})
+    return sum(1 for o in ops if o["topic"] not in index
+               and similar_topic(o["topic"], o.get("about", ""), {k: v for k, v in candidates.items() if k != o["topic"]}))
+
+
 def context_propose(text, source, model):
     """One model call: facts worth keeping from some conversation text. -> (ops, cost). Nothing is saved: every op is a
     proposal that passes the same rules as `add` (a one-line fact, no secrets, a description for a new topic)."""
     d = context_dir()
     index, _ = context_index(d)
-    known = "\n".join(f"- {t}: {a}" for t, (_, a) in index.items()) or "(none yet)"
+    queue = context_queue(d)
+    pending = {op["topic"]: op["about"] for op in queue if op["topic"] not in index and op.get("about")}
+    known = "\n".join([f"- {t} ({len(context_facts(d, t))} fact(s)): {a}" for t, (_, a) in index.items()]
+                      + [f"- {t} (proposed, waiting for review): {a}" for t, a in pending.items()]) or "(none yet)"
     prompt = (
         "You keep a small knowledge base of durable facts about one person's working environment, so that coding agents need not ask "
         "again. Read the conversation below and propose facts worth keeping: where things live (repository paths, folders), the stack and "
         "tools in use, service names and how they relate, commands that worked and when to use them, conventions and preferences.\n"
         "Rules: one line per fact, at most 200 characters, self-contained. Never include secrets, passwords, tokens, keys, customer or personal "
-        "data. Skip anything temporary or only true of this one task. Prefer an existing topic; a new topic needs an 'about' saying when to read it. "
-        "Topic names are lowercase words with dashes.\n"
+        "data. Skip anything temporary or only true of this one task. Use one of the existing topics whenever the fact fits it, even loosely: "
+        "a new topic is only for a subject that fits none of them, should be a broad area (like 'repos' or 'deploys') rather than one project or "
+        "tool, and needs an 'about' saying when to read it. Topic names are lowercase words with dashes.\n"
         f"Existing topics:\n{known}\n\n"
         'Reply with ONLY a JSON array: [{"topic": "...", "fact": "...", "about": "only for a new topic", "source": "short, optional"}]. '
         "Reply [] if there is nothing worth keeping.\n\n=== CONVERSATION ===\n" + text)
@@ -453,8 +506,9 @@ def context_propose(text, source, model):
     except (TetherError, ValueError):
         raw = None
     if not isinstance(raw, list):
+        usage.record("context.parse", "error", agent=context_agent(), model=model)
         raise TetherError("the model did not return a list of facts; try again")
-    ops, seen = [], {_norm_fact(op["fact"]) for op in context_queue(d)}
+    ops, seen = [], {_norm_fact(op["fact"]) for op in queue}
     for item in raw:
         if not isinstance(item, dict) or not all(isinstance(item.get(k), str) for k in ("topic", "fact")):
             continue
@@ -462,12 +516,15 @@ def context_propose(text, source, model):
         about = " ".join(str(item.get("about") or "").split())
         if not TOPIC_RE.match(topic) or not fact or len(fact) > CONTEXT_FACT_MAX or SECRETISH_RE.search(fact) or _norm_fact(fact) in seen:
             continue
+        if topic in pending and not about:
+            about = pending[topic]  # a topic proposed earlier and still waiting: the same description goes with this fact
         if topic not in index and not about:
             continue
         if any(_norm_fact(fact) == _norm_fact(x[1]) for x in context_facts(d, topic)):
             continue
         seen.add(_norm_fact(fact))
-        ops.append({"topic": topic, "fact": fact, "about": about, "source": " ".join(str(item.get("source") or source).split())[:80]})
+        ops.append({"topic": topic, "fact": fact, "about": about, "source": " ".join(str(item.get("source") or source).split())[:80],
+                    "agent": context_agent(), "model": model})
     return ops, cost
 
 
@@ -484,7 +541,13 @@ def context_learn(args):
         raise TetherError("those conversations have nothing readable in them yet")
     d = context_dir()
     index, _ = context_index(d)
-    ops, cost = context_propose("\n\n".join(parts), convs[0]["space"], vals.get("--model") or ai.search_model())
+    model, t0 = vals.get("--model") or context_model(), time.time()
+    try:
+        ops, cost = context_propose("\n\n".join(parts), convs[0]["space"], model)
+    except TetherError:
+        usage.record("context.learn", "error", agent=context_agent(), model=model, seconds=usage.since(t0))
+        raise
+    usage.record("context.learn", agent=context_agent(), model=model, proposed=len(ops), similar=similar_count(d, ops), seconds=usage.since(t0), cost=cost)
     queue = context_queue(d) + ops
     context_queue_save(d, queue)
     if "--json" in flags:
@@ -500,17 +563,35 @@ def context_proposals(args):
     flags, _, _ = parse_opts(args, flags=("--json",))
     d = context_dir()
     index, _ = context_index(d)
-    rows = [dict(op, n=n, new_topic=op["topic"] not in index) for n, op in enumerate(context_queue(d), 1)]
+    queue = context_queue(d)
+    rows = []
+    for n, op in enumerate(queue, 1):
+        new = op["topic"] not in index
+        candidates = {t: a for t, (_, a) in index.items()}
+        candidates.update({o["topic"]: o.get("about", "") for o in queue if o["topic"] not in index and o["topic"] != op["topic"]})
+        rows.append(dict(op, n=n, new_topic=new, similar=similar_topic(op["topic"], op.get("about", ""), candidates) if new else None))
     if "--json" in flags:
         print(json.dumps(rows))
         return
     for r in rows:
-        print(f"{r['n']}. [{r['topic']}] {r['fact']}" + (f"   (new topic: {r['about']})" if r["new_topic"] else ""))
+        print(f"{r['n']}. [{r['topic']}] {r['fact']}" + (f"   (new topic: {r['about']}" + (f"; similar to {r['similar']}: `accept --only {r['n']} --into {r['similar']}` files it there" if r["similar"] else "") + ")" if r["new_topic"] else ""))
     print(f"{len(rows)} proposed fact(s)" if rows else "no proposed facts")
 
 
+def _origin(op):
+    """Which agent and model proposed this fact (for the usage log: it says how good each one is, never what it proposed)."""
+    return (op.get("agent"), op.get("model"))
+
+
+def _count_origins(ops):
+    out = {}
+    for op in ops:
+        out[_origin(op)] = out.get(_origin(op), 0) + 1
+    return out
+
+
 def context_decide(args, accept):
-    _, vals, _ = parse_opts(args, valued=("--only",))
+    _, vals, _ = parse_opts(args, valued=("--only", "--into"))
     d = context_dir()
     ops = context_queue(d)
     if not ops:
@@ -521,18 +602,33 @@ def context_decide(args, accept):
             chosen = {int(x) for x in vals["--only"].split(",")}
         except ValueError:
             sys.exit("tether: --only takes numbers like 1,3")
+    if vals.get("--into"):  # file the proposed fact under an existing topic instead of the new one it proposed
+        into = vals["--into"]
+        if not accept or len(chosen) != 1:
+            sys.exit("tether: --into goes with `accept --only N` (one fact)")
+        if into not in context_index(d)[0]:
+            sys.exit(f"tether: no topic called '{into}' (tether context list)")
+        for n, op in enumerate(ops, 1):
+            if n in chosen:
+                ops[n - 1] = dict(op, topic=into, about="")
     rest = [op for n, op in enumerate(ops, 1) if n not in chosen]
     if accept:
-        done = []
+        done, by_origin = [], {}
         for n, op in enumerate(ops, 1):
             if n in chosen:
                 try:
                     done.append(add_fact(d, op["topic"], op["fact"], op["source"], op["about"]))
+                    if done[-1] == "added":
+                        by_origin[_origin(op)] = by_origin.get(_origin(op), 0) + 1
                 except TetherError as err:
                     say(f"{op['fact'][:50]}: {err}")
         print(f"{done.count('added')} fact(s) added" + (f", {done.count('already there')} already there" if "already there" in done else ""))
+        for (agent, model), n in by_origin.items():
+            usage.record("context.accept", accepted=n, into=bool(vals.get("--into")), agent=agent, model=model)
     else:
         print(f"discarded {len(ops) - len(rest)} proposed fact(s)")
+        for (agent, model), n in _count_origins(op for k, op in enumerate(ops, 1) if k in chosen).items():
+            usage.record("context.reject", rejected=n, agent=agent, model=model)
     context_queue_save(d, rest)
     if rest:
         print(f"{len(rest)} still waiting")
@@ -592,7 +688,7 @@ def context_undo(args):
             chosen = {int(x) for x in (vals.get("--only") or "").split(",")}
         except ValueError:
             sys.exit("tether: undo takes --only 1,3 (numbers from `tether context recent`) or --all")
-    removed = 0
+    removed, undone = 0, {}
     for n, e in enumerate(log, 1):
         if n not in chosen:
             continue
@@ -609,8 +705,11 @@ def context_undo(args):
                 with open(path, "w") as f:
                     f.write("\n".join(lines))
                 removed += 1
+                undone[_origin(e)] = undone.get(_origin(e), 0) + 1
                 break
     context_auto_log(d, [e for n, e in enumerate(log, 1) if n not in chosen])
+    for (agent, model), n in undone.items():
+        usage.record("context.undo", removed=n, agent=agent, model=model)
     print(f"removed {removed} fact(s)")
 
 
@@ -656,6 +755,7 @@ def context_harvest(args):
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
+            usage.record("job", "skipped", job="harvest", reason="locked")
             return
         _context_harvest_run(d, flags)
 
@@ -683,11 +783,14 @@ def _context_harvest_run(d, flags):
         if len(lines) - seen < CONTEXT_HARVEST_MIN_NEW or time.time() - os.path.getmtime(doc["path"]) < CONTEXT_HARVEST_IDLE:
             continue
         text = "\n".join(lines[seen:])[-CONTEXT_HARVEST_CHARS:]
+        t0, proposed, saved = time.time(), 0, 0
         try:
             ops, cost = context_propose(text, doc["space"], context_model())
         except TetherError as err:
             say(f"background learning: {err}")
+            usage.record("context.harvest", "error", agent=context_agent(), model=context_model(), seconds=usage.since(t0))
             break
+        proposed, similar = len(ops), similar_count(d, ops)
         spend["usd"] += cost or 0.0
         marks[doc["session"]] = {"lines": len(lines), "at": now()}
         if ops and context_auto_accept_on():
@@ -697,7 +800,9 @@ def _context_harvest_run(d, flags):
                 if auto_acceptable(op, index):
                     try:
                         if add_fact(d, op["topic"], op["fact"], "auto: " + op["source"]) == "added":
-                            log.append({"topic": op["topic"], "fact": op["fact"], "source": op["source"], "at": now()})
+                            log.append({"topic": op["topic"], "fact": op["fact"], "source": op["source"], "at": now(),
+                                        "agent": op.get("agent"), "model": op.get("model")})
+                            saved += 1
                         continue
                     except TetherError:
                         pass
@@ -706,7 +811,11 @@ def _context_harvest_run(d, flags):
             ops = keep
         if ops:
             context_queue_save(d, context_queue(d) + ops)
+        usage.record("context.harvest", agent=context_agent(), model=context_model(), proposed=proposed, auto_saved=saved, queued=len(ops),
+                      similar=similar, seconds=usage.since(t0), cost=cost)
         done += 1
+    usage.record("job", job="harvest", read=done, reason="first_run" if first else "cap" if spend["usd"] >= CONTEXT_HARVEST_CAP_USD
+                 else "none_ready" if done == 0 else "ran")
     with open(marks_path, "w") as f:
         json.dump(marks, f)
     with open(spend_path, "w") as f:

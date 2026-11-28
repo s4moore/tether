@@ -43,6 +43,7 @@ Herdr app ── mods (JS) ──exec──▶ tether (Python) ──▶ herdr-a
 | `settings` | the settings registry and `tether config` |
 | `backups` | backup, restore, export, import, undelete |
 | `doctor` | `tether doctor` |
+| `usage` | the local usage log (`record`, `tether stats`): counts, timings and outcomes only; `record` drops any field that is not a number, a boolean or a short token |
 | `cli` | `main()`: the command table, and the `--help` text |
 
 Three rules keep it workable:
@@ -263,7 +264,7 @@ stored. Default `~/.local/share/tether/context` (`$TETHER_CONTEXT_DIR`, or `cont
   `search_corpus`, newest first. `.harvested.json` holds, per session, how many message lines were already read; the first run
   only records these (history is never mined). A conversation is read when it has `CONTEXT_HARVEST_MIN_NEW` (6) new messages and its
   transcript has not been written for `CONTEXT_HARVEST_IDLE` (30 min); only the new lines (the last `CONTEXT_HARVEST_CHARS`,
-  40,000) are sent, to `context_model()` (haiku). The call goes through `context_agent()`: `claude -p`, or `copilot -p -s --available-tools ""` (the prompt is an argument, Copilot reports no cost). With `context_auto_accept` on, `auto_acceptable()` lets a fact skip the queue only if its topic already exists and it has no command, link or shell characters (`RISKY_FACT_RE`); those are logged in `.auto-added.json` (last 50) for `recent` and `undo`. At most `CONTEXT_HARVEST_MAX` (3) conversations per run and
+  40,000) are sent, to `context_model()` (haiku; `context learn` uses the same setting). The call goes through `context_agent()`: `claude -p`, or `copilot -p -s --available-tools ""` (the prompt is an argument, Copilot reports no cost). `context_propose` shows the model each topic with its fact count plus the new topics already waiting in the queue; `similar_topic()` flags a proposed new topic that resembles another (shown as `similar` by `proposals --json`, filed elsewhere with `accept --only N --into <topic>`). With `context_auto_accept` on, `auto_acceptable()` lets a fact skip the queue only if its topic already exists and it has no command, link or shell characters (`RISKY_FACT_RE`); those are logged in `.auto-added.json` (last 50) for `recent` and `undo`. At most `CONTEXT_HARVEST_MAX` (3) conversations per run and
   `CONTEXT_HARVEST_CAP_USD` ($0.50) a day (`.harvest-spend.json`). A failed call stops the run without marking anything read. It only
   queues; it never calls `add_fact`.
 
@@ -327,6 +328,7 @@ The space and tab menus keep Herdr's own menu look (they are copies of its `menu
 | `tether-history` | `tether list --json`; `tether open --id <id> -y`; `tether delete --id <id> -y` (the trash icon) | `closed`, `last_used`, `name`, `forked_from`, `links[].agent/transcript/recoverable` |
 | `tether-settings` | `tether config --json`; `tether config set <key> <value\|default>` | `key group label help type choices default value source env editable privacy` |
 | `tether-new-space` (default agent) | `tether config get default_agent` | one word |
+| `tether-settings` (share view, `props.mode = "share"`) | `tether stats --export --json` (the text that would be written, nothing saved); `tether stats --export -y -o <folder>` after you choose a folder | the summary JSON; `wrote <path>` |
 | `tether-context` | `tether context list --json` (topics, about, facts with `line`, `date`, `source`, `auto`); `tether context remove <topic> --line N` | `topic about facts[].line/fact/date/source/auto` |
 | `tether-context-review` | opened with `props.learn = {id, name}` it runs `tether context learn --id <id> --json` itself and shows the progress; then `tether context proposals --json`; `tether context accept\|reject [--only N]` | `n topic fact about source new_topic` |
 | `tether-menu` | (Learn from this space and Review learned facts) opens `tether-context-review`; `tether continue --tab <tab-id>` (tab menu: Continue in Copilot / Claude); `tether list --json` (which agent a tab has); `tether backup --id <id> --json` (Back up now); `tether fork --id <id> -y` (Fork); `tether delete --id <id> -y --close` (Archive; "nothing linked" falls back to a plain close) | `sessions`, `bytes` |

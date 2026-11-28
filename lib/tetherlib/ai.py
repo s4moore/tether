@@ -4,10 +4,11 @@ import json
 import os
 import re
 import subprocess
+import time
 
 from tetherlib.core import TetherError, env, load_config
 
-from tetherlib import core, settings
+from tetherlib import core, settings, usage
 
 
 def search_model():
@@ -60,8 +61,31 @@ def ask_copilot(prompt, model):
     return r.stdout.strip(), None
 
 
+def failure_kind(text):
+    """Why an AI call failed, as one short label (for the usage log): never the message itself."""
+    t = text.lower()
+    if "not found on path" in t:
+        return "missing"
+    if "timeoutexpired" in t or "timed out" in t:
+        return "timeout"
+    if any(w in t for w in ("log in", "login", "authenticat", "api key", "unauthorized", "not logged")):
+        return "auth"
+    if any(w in t for w in ("rate limit", "quota", "usage limit", "credit", "limit reached", "overloaded")):
+        return "limit"
+    if "model" in t and any(w in t for w in ("not available", "not found", "invalid", "unknown")):
+        return "model"
+    return "other"
+
+
 def ask_ai(prompt, model, budget=2, agent="claude"):
-    return ask_copilot(prompt, model) if agent == "copilot" else ask_claude(prompt, model, budget)
+    t0 = time.time()
+    try:
+        answer, cost = ask_copilot(prompt, model) if agent == "copilot" else ask_claude(prompt, model, budget)
+    except TetherError as err:
+        usage.record("ai.call", "error", agent=agent, model=model, kind=failure_kind(str(err)), seconds=usage.since(t0), prompt_chars=len(prompt))
+        raise
+    usage.record("ai.call", "ok", agent=agent, model=model, seconds=usage.since(t0), cost=cost, prompt_chars=len(prompt), answer_chars=len(answer))
+    return answer, cost
 
 
 def parse_json_answer(text):

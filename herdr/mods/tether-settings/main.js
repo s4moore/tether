@@ -4,10 +4,16 @@
 // here. Changes apply to the next agent you start or the next background run. Esc closes.
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { props, closeOverlay, theme, exec, home, notify, openOverlay } from "herdr";
+import { props, closeOverlay, theme, exec, home, notify, openOverlay, pickFolder } from "herdr";
 
 const TETHER = () => `${home()}/.local/bin/tether`;
 const POPUP_HEIGHT = 640;
+const ISSUES_URL = "https://github.com/s4moore/tether/issues/new?template=usage-summary.md";
+// A small button beside a group's title: where that group's related window opens from.
+const ACTIONS = {
+  Context: { text: "Browse saved facts", open: { mod: "tether-context", kind: "popup", width: 560, height: 620 } },
+  Diagnostics: { text: "Share a usage summary…", open: { mod: "tether-settings", kind: "popup", width: 520, height: 640, props: { mode: "share" } } },
+};
 const label = { claude: "Claude", copilot: "Copilot", haiku: "Haiku", sonnet: "Sonnet", opus: "Opus" };
 
 // ---- the look shared by every tether popup: title + Esc keycap, grouped cards with hairlines, switches, segmented choices ----
@@ -22,11 +28,54 @@ const card = (t, rows) => v_flex().flex_none().rounded(10).border_1().border_col
 
 export default class Settings extends View {
   init(_props, cx) {
+    this.shareMode = props()?.mode === "share"; // the "Share a usage summary" view of this popup
+    this.summary = null; // share view: the text of the file that would be written
+    this.saved = null;
     this.rows = null; // null: loading
     this.error = null;
     this.busy = false;
     this.handle = cx.focus_handle();
-    this.load(cx);
+    if (this.shareMode) this.loadSummary(cx);
+    else this.load(cx);
+  }
+
+  // Share view: show exactly what `tether stats --export` would write, before anything is saved.
+  loadSummary(cx) {
+    cx.spawn(async (cx) => {
+      try {
+        const r = await exec(TETHER(), ["stats", "--export", "--json"], { timeout: 30000 });
+        if (r.code !== 0) throw new Error((r.stderr || r.stdout).trim().replace(/^tether: /, ""));
+        this.summary = r.stdout.trim();
+        this.error = null;
+      } catch (e) {
+        this.summary = "";
+        this.error = String(e?.message ?? e);
+      }
+      cx.notify();
+    });
+  }
+
+  // Save the summary in a folder you choose, then show it in Finder. Nothing is sent anywhere.
+  saveSummary(cx) {
+    if (this.busy) return;
+    cx.spawn(async (cx) => {
+      try {
+        const folder = await pickFolder({ prompt: "Save summary here" }).catch(() => null);
+        if (!folder) return;
+        this.busy = true;
+        cx.notify();
+        const r = await exec(TETHER(), ["stats", "--export", "-y", "-o", folder], { timeout: 30000 });
+        if (r.code !== 0) throw new Error((r.stderr || r.stdout).trim().replace(/^tether: /, ""));
+        const m = r.stdout.match(/^wrote (.+)$/m);
+        this.saved = m ? m[1] : folder;
+        if (m) exec("/usr/bin/open", ["-R", m[1]]).catch(() => {});
+        notify({ title: "Summary saved", body: "Nothing was sent. Attach the file to an issue if you want to share it.", level: "success" });
+      } catch (e) {
+        this.error = String(e?.message ?? e);
+      }
+      this.busy = false;
+      cx.notify();
+    });
   }
 
   load(cx) {
@@ -81,7 +130,30 @@ export default class Settings extends View {
         .child(label[c] ?? c)));
   }
 
+  renderShare() {
+    const t = theme();
+    const idle = !this.busy;
+    const button = (id, text, primary, enabled, onClick) => div().id(id).flex_none().h(28).px(12).flex().items_center().justify_center().rounded(8).border_1()
+      .border_color(primary && enabled ? t.solid : t.border).bg(primary && enabled ? t.solid : t.background).text_size(12).font_medium()
+      .text_color(primary && enabled ? t.solid_foreground : (enabled ? t.foreground : t.dim))
+      .when(enabled, (el) => el.cursor_pointer().hover((s) => s.opacity(0.85)).on_click(onClick)).child(text);
+    const lines = (this.summary ?? "").split("\n").map((l) => div().text_size(11).text_color(t.foreground).child(l.replace(/^ +/, (m) => "\u00a0".repeat(m.length)) || "\u00a0"));
+    return v_flex().id("tether-share").track_focus(this.handle).on_key_down((e, cx) => this.key(e, cx))
+      .w_full().h(POPUP_HEIGHT).min_h(0).p(12).gap(8).bg(t.popover).text_color(t.foreground)
+      .child(header(t, "Share a usage summary", "Totals and versions only · nothing is sent"))
+      .child(div().px(6).text_size(12).text_color(t.dim).child("This is everything the file would contain: how often each feature ran, how long it took, how many learned facts you accepted, and version numbers. It has no conversation text, no facts, no search words, no names and no paths."))
+      .child(v_flex().id("tether-share-text").flex_1().min_h(0).overflow_y_scrollbar().p(12).rounded(10).border_1().border_color(t.border).bg(t.background)
+        .when(this.summary === null, (el) => el.child(div().text_size(12).text_color(t.dim).child("Preparing the summary…")))
+        .when(Boolean(this.error), (el) => el.child(div().text_size(12).text_color(t.blocked).child(this.error)))
+        .children(lines))
+      .when(Boolean(this.saved), (el) => el.child(div().px(6).text_size(11.5).text_color(t.dim).child(`Saved: ${this.saved}`)))
+      .child(h_flex().flex_none().gap(8).justify_end()
+        .child(button("sh-issue", "Open the issue page", false, true, () => exec("/usr/bin/open", [ISSUES_URL]).catch(() => {})))
+        .child(button("sh-save", "Save…", true, Boolean(this.summary) && idle, (_e, cx) => this.saveSummary(cx))));
+  }
+
   render() {
+    if (this.shareMode) return this.renderShare();
     const t = theme();
     const rows = this.rows;
     const idle = !this.busy;
@@ -116,10 +188,13 @@ export default class Settings extends View {
       .child(v_flex().id("tether-settings-list").flex_1().min_h(0).overflow_y_scrollbar().pb(6)
         .when(rows === null, (el) => el.child(div().p(10).text_size(12).text_color(t.dim).child("Loading…")))
         .when(rows !== null && Boolean(this.error), (el) => el.child(div().p(10).text_size(12).text_color(t.blocked).child(`Could not read tether: ${this.error}`)))
-        .children(groups.flatMap((g) => [g.name === "Context" ? h_flex().items_center().flex_none().child(div().flex_1().child(section(t, g.name)))
-          .child(div().id("st-browse-context").flex_none().mr(6).mt(8).mb(4).h(22).px(8).flex().items_center().rounded(6).border_1().border_color(t.border).text_size(11).text_color(t.dim)
-            .cursor_pointer().hover((s) => s.text_color(t.foreground).bg(t.hover))
-            .on_click(() => { closeOverlay(props().overlay); openOverlay({ mod: "tether-context", kind: "popup", width: 560, height: 620 }); }).child("Browse saved facts"))
-          : section(t, g.name), card(t, g.rows.map(line))])));
+        .children(groups.flatMap((g) => {
+          const action = ACTIONS[g.name];
+          return [action ? h_flex().items_center().flex_none().child(div().flex_1().child(section(t, g.name)))
+            .child(div().id(`st-action-${g.name}`).flex_none().mr(6).mt(8).mb(4).h(22).px(8).flex().items_center().rounded(6).border_1().border_color(t.border).text_size(11).text_color(t.dim)
+              .cursor_pointer().hover((s) => s.text_color(t.foreground).bg(t.hover))
+              .on_click(() => { closeOverlay(props().overlay); openOverlay(action.open); }).child(action.text))
+            : section(t, g.name), card(t, g.rows.map(line))];
+        })));
   }
 }

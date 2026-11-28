@@ -23,7 +23,7 @@ curl -fsSL https://raw.githubusercontent.com/s4moore/tether/main/get.sh | sh
 ```
 
 Quit Herdr first. The script downloads the release, **checks it against the published SHA-256**, and runs the installer. For a specific
-version: `curl -fsSL .../get.sh | TETHER_VERSION=0.4.0 sh`.
+version: `curl -fsSL .../get.sh | TETHER_VERSION=0.5.0 sh`.
 
 **Rather read it first?** Piping a script into a shell asks you to trust it. Read [`get.sh`](get.sh) and `install.sh`, or:
 
@@ -68,6 +68,10 @@ and the **gear** for settings. Everything else is a right-click on a space or a 
   *Learn from this space* run your own `claude` (or `copilot`) as you, with your account, on short digests or the text of conversations. Only
   what was said is sent, never tool output. **Background learning** does this without a button press, which is why it is off by default.
   Plain *Search words* is local. `tether read` prints conversation text to the terminal.
+- **A small usage log stays on this computer.** `~/.local/state/tether/events.jsonl` records that a feature ran, how long it took, its outcome,
+  the agent and model, and counts (for example facts proposed and accepted). Never what was said, a fact, a search word, a name or a path.
+  It is never sent anywhere; `tether stats` shows it, `tether config set usage_log off` stops it, and deleting the file clears it. `tether stats --export` writes a
+  totals-only summary you can read first and share if you choose; nothing is sent for you.
 - **Backups and exports are plain copies of your conversations**, which can contain anything you pasted (secrets, customer data). They are
   unencrypted, in a folder only you can read; exports are mode 0600. Do not commit or share them casually.
 - **Saved facts are plain text** in `~/.local/share/tether/context`. tether refuses facts that look like secrets, but do not store any.

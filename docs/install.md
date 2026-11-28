@@ -22,7 +22,7 @@ curl -fsSL https://raw.githubusercontent.com/s4moore/tether/main/get.sh | sh
 
 Quit Herdr first: it rewrites its `shared.json` when it quits, and the installer refuses to run while it is
 open. The script downloads the release tarball, **checks it against the published SHA-256**, and runs the
-installer from it. For a specific version: `curl -fsSL .../get.sh | TETHER_VERSION=0.4.0 sh`.
+installer from it. For a specific version: `curl -fsSL .../get.sh | TETHER_VERSION=0.5.0 sh`.
 
 **Prefer to read it first?** Piping a script into a shell asks you to trust it. Either read `get.sh`
 ([source](../get.sh)) and `install.sh`, or do it by hand:
