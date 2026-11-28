@@ -3,13 +3,22 @@
 //     Opened by the archive button in the tether-spaces header.
 //   - dialog, props { mode: "export", id, name }: export one space to a folder you choose.
 //     Opened by Export… in the tether-menu space menu.
+//   - dialog, props { mode: "delete", id, name }: confirm, then delete one space for good (`tether delete --sessions`: the
+//     space, its conversations and their backup copies). Opened by Delete… in the same menu.
 // Esc closes.
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { props, closeOverlay, theme, exec, home, notify, pickFolder } from "herdr";
 
 const TETHER = () => `${home()}/.local/bin/tether`;
-const POPUP_HEIGHT = 560;
+const POPUP_HEIGHT = 580;
+
+// ---- the look shared by every tether popup: title + Esc keycap, grouped cards with hairlines ----
+const header = (t, title, sub) => h_flex().px(2).pt(2).pb(2).items_center().gap(10).flex_none()
+  .child(v_flex().flex_1().min_w(0).gap(1)
+    .child(div().text_size(15).font_medium().text_color(t.foreground).child(title))
+    .when(Boolean(sub), (el) => el.child(div().text_size(11.5).text_color(t.dim).child(sub))))
+  .child(div().flex_none().h(18).px(6).flex().items_center().rounded(5).border_1().border_color(t.border).text_size(10).text_color(t.dim).child("Esc"));
 const DIALOG_HEIGHT = 270;
 
 async function tether(args, timeout = 300000) {
@@ -44,6 +53,7 @@ async function chooseExportFile() {
 export default class TetherBackups extends View {
   init(_props, cx) {
     this.exportMode = props()?.mode === "export";
+    this.deleteMode = props()?.mode === "delete";
     this.status = null; // popup: `tether backup --status --json`
     this.items = null; // popup: `tether backup --list --json` (null while loading)
     this.row = null; // dialog: this space's row from `tether list --json`; false when it has none
@@ -59,7 +69,7 @@ export default class TetherBackups extends View {
   load(cx) {
     cx.spawn(async (cx) => {
       try {
-        if (this.exportMode) {
+        if (this.exportMode || this.deleteMode) {
           const id = props()?.id;
           this.row = (await tetherJson(["list", "--json"], 60000)).find((s) => s.id === id) ?? false;
         } else {
@@ -71,26 +81,31 @@ export default class TetherBackups extends View {
         this.error = null;
       } catch (e) {
         this.error = String(e?.message ?? e);
-        if (this.exportMode) this.row = false;
+        if (this.exportMode || this.deleteMode) this.row = false;
         else this.items = this.items ?? [];
       }
       cx.notify();
     });
   }
 
-  // Runs one action with a "working" state, shows its result, then refreshes the status.
-  async work(label, fn, cx) {
+  // Runs one action with a "working" state, shows its result, then refreshes the list and status. The work runs inside
+  // cx.spawn and uses ITS cx afterwards: the click's own cx is no longer good once the action has awaited, which left
+  // the list showing a deleted conversation until the popup was reopened.
+  work(label, fn, cx) {
     if (this.busy) return;
     this.busy = label;
     this.error = null;
     cx.notify();
-    try {
-      this.note = await fn();
-    } catch (e) {
-      this.error = String(e?.message ?? e);
-    }
-    this.busy = null;
-    this.load(cx);
+    cx.spawn(async (cx) => {
+      try {
+        this.note = await fn();
+      } catch (e) {
+        this.error = String(e?.message ?? e);
+      }
+      this.busy = null;
+      cx.notify();
+      this.load(cx);
+    });
   }
 
   backupAll(cx) {
@@ -171,13 +186,55 @@ export default class TetherBackups extends View {
     const t = theme();
     const primary = kind === "primary";
     const danger = kind === "danger";
-    return h_flex().id(id).h(grow ? 34 : 28).px(grow ? 10 : 12).items_center().justify_center().rounded(8).border_1().text_size(12.5).font_medium()
+    return h_flex().id(id).h(grow ? 34 : 26).px(grow ? 10 : 12).items_center().justify_center().rounded(8).border_1().text_size(12).font_medium().flex_none()
       .when(grow, (el) => el.flex_1().min_w(0))
-      .border_color(primary ? t.solid : danger ? t.blocked : t.input).bg(primary ? t.solid : t.raised)
-      .text_color(primary ? t.solid_foreground : danger ? t.blocked : t.foreground)
-      .when(enabled, (el) => el.cursor_pointer().hover((s) => s.opacity(0.88)).on_click(onClick))
-      .when(!enabled, (el) => el.opacity(0.45))
+      .border_color(primary && enabled ? t.solid : danger ? t.blocked : t.border).bg(primary && enabled ? t.solid : t.background)
+      .text_color(primary && enabled ? t.solid_foreground : danger ? t.blocked : (enabled ? t.foreground : t.dim))
+      .when(enabled, (el) => el.cursor_pointer().hover((s) => s.opacity(0.85)).on_click(onClick))
       .child(label);
+  }
+
+  // Delete for good: the space, its conversations and their backup copies. Archive (the menu's other item) keeps a backup.
+  deleteNow(cx) {
+    if (this.busy) return;
+    const p = props() ?? {};
+    this.busy = "Deleting…";
+    this.error = null;
+    cx.notify();
+    cx.spawn(async (cx) => {
+      try {
+        const r = await exec(TETHER(), ["delete", "--id", p.id, "--sessions", "--close", "-y"], { timeout: 120000 });
+        if (r.code !== 0) throw new Error((r.stderr || r.stdout).trim().replace(/^tether: /, ""));
+        notify({ title: `Deleted “${p.name ?? "space"}”`, body: "The space, its conversations and their backup copies are gone.", level: "success" });
+        closeOverlay(p.overlay);
+        return;
+      } catch (e) {
+        this.error = String(e?.message ?? e).slice(0, 400);
+      }
+      this.busy = null;
+      cx.notify();
+    });
+  }
+
+  renderDelete() {
+    const t = theme();
+    const p = props() ?? {};
+    const links = this.row ? this.row.links : [];
+    const ready = this.row !== null && links.length > 0 && !this.busy;
+    return v_flex().id("tether-delete").track_focus(this.handle).on_key_down((e, cx) => this.key(e, cx))
+      .w_full().h(DIALOG_HEIGHT).p(18).gap(10).bg(t.popover).text_color(t.foreground)
+      .child(header(t, `Delete “${p.name ?? "space"}”?`, "This cannot be undone"))
+      .child(div().text_size(12.5).text_color(t.foreground).child(
+        this.row === null ? "Checking what tether has linked…"
+          : links.length > 0 ? `The space closes, and ${plural(links.length, "conversation")} and their backup copies are deleted from this computer: ${links.filter((l) => l.tab_open).length} in open tabs, ${links.filter((l) => !l.tab_open).length} left from tabs you closed (for example after Continue in another agent).`
+            : "tether has nothing linked to this space, so there is nothing to delete here. Use Close instead."))
+      .child(div().text_size(11.5).text_color(t.dim).child("To keep a backup you can bring back later, choose Archive instead."))
+      .when(this.error, (el) => el.child(div().text_size(12).text_color(t.blocked).child(this.error)))
+      .child(div().flex_1())
+      .child(h_flex().justify_end().gap(8)
+        .child(this.busy ? div().text_size(12).text_color(t.dim).child(this.busy) : div())
+        .child(this.button("td-cancel", "Cancel", "plain", true, () => closeOverlay(p.overlay)))
+        .child(this.button("td-delete", "Delete permanently", "danger", ready, (_e, cx) => this.deleteNow(cx))));
   }
 
   renderExport() {
@@ -204,6 +261,7 @@ export default class TetherBackups extends View {
 
   render() {
     if (this.exportMode) return this.renderExport();
+    if (this.deleteMode) return this.renderDelete();
     const t = theme();
     const s = this.status;
     const p = props() ?? {};
@@ -211,12 +269,12 @@ export default class TetherBackups extends View {
     const items = this.items ?? [];
     const gone = s ? s.missing - s.recoverable : 0;
     const agentName = (a) => (a === "claude" ? "Claude" : "Copilot");
-    const section = (label, n) => div().px(10).pt(8).pb(2).text_size(11).font_semibold().text_color(t.dim).child(`${label} (${n})`);
+    const section = (label, n) => div().px(12).pt(10).pb(4).text_size(11).font_medium().text_color(t.dim).child(`${label} · ${n}`);
     const line = (r) => {
       const restorable = !r.in_agent && r.in_backup;
       const asking = this.confirming === r.session;
       const tab = r.tab && !/^\d+$/.test(r.tab) && r.tab.toLowerCase() !== r.agent ? ` · ${r.tab}` : "";
-      return h_flex().id(`bk-${r.agent}-${r.session}`).px(10).py(7).gap(10).items_center().flex_none().rounded(8)
+      return h_flex().id(`bk-${r.agent}-${r.session}`).px(12).py(9).gap(10).items_center().flex_none()
         .when(idle && r.linked && !asking, (el) => el.cursor_pointer().hover((st) => st.bg(t.hover)).on_click((_e, cx) => this.openOne(r, cx)))
         .child(v_flex().flex_1().min_w(0).gap(1)
           .child(div().truncate().text_size(12.5).font_medium().text_color(t.foreground).child(`${r.space}${tab}`))
@@ -234,9 +292,9 @@ export default class TetherBackups extends View {
             .child(this.button(`bk-no-${r.session}`, "Cancel", "plain", true, (_e, cx) => { cx.stop_propagation(); this.confirming = null; cx.notify(); }))
           : h_flex().flex_none().gap(6).items_center()
             .child(r.linked
-              ? this.button(`bk-open-${r.session}`, restorable ? "Restore & open" : "Open", restorable ? "primary" : "plain", idle,
+              ? this.button(`bk-open-${r.session}`, restorable ? "Restore & open" : "Open", "plain", idle,
                 (_e, cx) => { cx.stop_propagation(); this.openOne(r, cx); })
-              : this.button(`bk-restore-${r.session}`, "Restore & open", "primary", idle,
+              : this.button(`bk-restore-${r.session}`, "Restore & open", "plain", idle,
                 (_e, cx) => { cx.stop_propagation(); this.openOne(r, cx); }))
             .child(div().id(`bk-del-${r.session}`).size(24).flex_none().flex().items_center().justify_center().rounded(6)
               .text_color(t.dim).cursor_pointer().hover((st) => st.bg(t.hover).text_color(t.blocked))
@@ -248,34 +306,29 @@ export default class TetherBackups extends View {
     const needs = items.filter((r) => !r.in_agent && r.in_backup);
     const fine = items.filter((r) => r.in_agent || !r.in_backup);
     return v_flex().id("tether-backups").track_focus(this.handle).on_key_down((e, cx) => this.key(e, cx))
-      .w_full().h(POPUP_HEIGHT).p(16).gap(10).bg(t.popover).text_color(t.foreground)
-      .child(h_flex().items_center().child(div().flex_1().text_size(15).font_semibold().child("Backups"))
-        .child(div().text_size(11).text_color(t.dim).child("Esc")))
-      .child(v_flex().gap(3)
-        .when(!s && !this.error, (el) => el.child(div().text_size(12).text_color(t.dim).child("Loading…")))
-        .when(s, (el) => el
-          .child(div().text_size(12.5).text_color(t.foreground).child(
-            `${s.backed_up} of ${s.linked} sessions backed up · ${mb(s.bytes)} · ${s.last_backup ? `last ${ago(s.last_backup)}` : "never backed up"}`))
-          .when(s.recoverable > 0, (el2) => el2.child(div().text_size(12).text_color(t.blocked).child(
-            `${plural(s.recoverable, "conversation")} gone from Claude/Copilot, but in the backup: use Restore & open below.`)))
-          .when(gone > 0, (el2) => el2.child(div().text_size(11.5).text_color(t.dim).child(
-            `${plural(gone, "linked session")} ${gone === 1 ? "has" : "have"} no transcript anywhere: never used, or cleaned up before a backup.`)))))
+      .w_full().h(POPUP_HEIGHT).p(12).gap(10).bg(t.popover).text_color(t.foreground)
+      .child(header(t, "Backups", s ? `${s.backed_up} of ${s.linked} sessions backed up · ${mb(s.bytes)} · ${s.last_backup ? `last ${ago(s.last_backup)}` : "never backed up"}` : "Loading…"))
+      .when(s && (s.recoverable > 0 || gone > 0), (el) => el.child(v_flex().gap(3).px(2)
+        .when(s.recoverable > 0, (el2) => el2.child(div().text_size(12).text_color(t.foreground).child(
+          `${plural(s.recoverable, "conversation")} gone from Claude/Copilot, but in the backup: use Restore & open below.`)))
+        .when(gone > 0, (el2) => el2.child(div().text_size(11.5).text_color(t.dim).child(
+          `${plural(gone, "linked session")} ${gone === 1 ? "has" : "have"} no transcript anywhere: never used, or cleaned up before a backup.`)))))
       .child(h_flex().gap(8)
         .child(this.button("tb-backup", "Back up all", "primary", idle, (_e, cx) => this.backupAll(cx), true))
         .child(this.button("tb-import", "Import…", "plain", idle, (_e, cx) => this.importPick(cx), true)))
       .when(this.busy, (el) => el.child(div().text_size(12).text_color(t.dim).child(this.busy)))
       .when(!this.busy && this.note, (el) => el.child(div().text_size(12).text_color(t.muted).child(this.note)))
       .when(this.error, (el) => el.child(div().text_size(12).text_color(t.blocked).child(this.error)))
-      .child(v_flex().id("bk-list").flex_1().min_h(0).overflow_y_scrollbar().gap(1).rounded(8).border_1().border_color(t.border).py(4)
+      .child(v_flex().id("bk-list").flex_1().min_h(0).overflow_y_scrollbar().rounded(10).border_1().border_color(t.border).bg(t.background).pb(4)
         .when(this.items === null, (el) => el.child(div().p(10).text_size(12).text_color(t.dim).child("Loading…")))
         .when(this.items !== null && items.length === 0, (el) => el.child(div().p(10).text_size(12).text_color(t.dim).child("Nothing is backed up yet. Press “Back up all”.")))
-        .when(needs.length > 0, (el) => el.child(section("Gone from Claude/Copilot, in the backup", needs.length)).children(needs.map(line)))
-        .when(fine.length > 0, (el) => el.child(section(needs.length > 0 ? "Also backed up" : "Backed up", fine.length)).children(fine.map(line))))
+        .when(needs.length > 0, (el) => el.child(section("Gone from Claude/Copilot, in the backup", needs.length)).children(needs.flatMap((r, i) => (i ? [div().h(1).w_full().bg(t.border), line(r)] : [line(r)]))))
+        .when(fine.length > 0, (el) => el.child(section(needs.length > 0 ? "Also backed up" : "Backed up", fine.length)).children(fine.flatMap((r, i) => (i ? [div().h(1).w_full().bg(t.border), line(r)] : [line(r)])))))
       .child(h_flex().gap(8).items_center()
         .child(div().flex_1().min_w(0).truncate().text_size(11).text_color(t.dim).child(
           s ? `Automatic: ${s.auto ? "on" : "off"} · ${s.dir}` : ""))
         .when(s && s.exists, (el) => el.child(h_flex().id("tb-open").flex_none().cursor_pointer().text_size(11).text_color(t.muted)
           .hover((st) => st.text_color(t.foreground)).on_click(() => exec("/usr/bin/open", [s.dir]).catch(() => {})).child("Show in Finder"))))
-      .child(div().text_size(11).text_color(t.dim).child("Backups contain full conversations: keep them private."));
+      .child(div().text_size(10.5).text_color(t.dim).child("Backups contain full conversations: keep them private."));
   }
 }

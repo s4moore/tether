@@ -1164,6 +1164,579 @@ class Searching(TetherTestCase):
                     self.run_search(*bad)
 
 
+class ContinueInOtherAgent(TetherTestCase):
+    """`tether continue`: a conversation carried between Claude Code and Copilot CLI by writing a new session in the other agent's store."""
+
+    def setUp(self):
+        super().setUp()
+        self.claude, self.copilot, self.work = (os.path.join(self.dir, n) for n in ("claude", "copilot", "work"))
+        os.makedirs(self.work)
+        patcher = mock.patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": self.claude, "COPILOT_HOME": self.copilot})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def claude_transcript(self, session=SESSION):
+        folder = os.path.join(self.claude, "projects", "-work")
+        os.makedirs(folder, exist_ok=True)
+        path = os.path.join(folder, session + ".jsonl")
+        lines = [
+            {"type": "queue-operation", "operation": "enqueue"},
+            {"type": "user", "message": {"role": "user", "content": "run it"}},
+            {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "starting"}]}},
+            {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "echo hi"}}]}},
+            {"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "hi"}]}},
+            {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "it printed hi"}]}},
+            {"type": "assistant", "isSidechain": True, "message": {"role": "assistant", "content": [{"type": "text", "text": "sub-agent chatter"}]}},
+            {"type": "user", "isMeta": True, "message": {"role": "user", "content": "meta"}},
+            {"type": "user", "message": {"role": "user", "content": "thanks"}},
+        ]
+        with open(path, "w") as f:
+            f.write("\n".join(json.dumps(x) for x in lines) + "\n")
+        return path
+
+    EXPECTED = [("user", "run it"), ("assistant", "starting\n\n[used Bash: echo hi]\n\n[result: hi]\n\nit printed hi"), ("user", "thanks")]
+
+    def test_claude_turns_fold_tool_calls_into_the_assistant_turn_and_skip_noise(self):
+        self.assertEqual(tether.continue_turns("claude", self.claude_transcript()), self.EXPECTED)
+
+    def test_copilot_turns_do_the_same(self):
+        folder = os.path.join(self.copilot, "session-state", SESSION)
+        os.makedirs(folder)
+        events = [
+            {"type": "session.start", "data": {}},
+            {"type": "user.message", "data": {"content": "run it"}},
+            {"type": "assistant.message", "data": {"content": "starting", "toolRequests": []}},
+            {"type": "tool.execution_start", "data": {"toolName": "Bash", "arguments": {"command": "echo hi"}}},
+            {"type": "tool.execution_complete", "data": {"result": {"content": "hi"}}},
+            {"type": "assistant.message", "data": {"content": "it printed hi"}},
+            {"type": "user.message", "data": {"content": "thanks"}},
+        ]
+        path = os.path.join(folder, "events.jsonl")
+        with open(path, "w") as f:
+            f.write("\n".join(json.dumps(x) for x in events) + "\n")
+        self.assertEqual(tether.continue_turns("copilot", path), self.EXPECTED)
+
+    def test_a_conversation_survives_a_round_trip_through_either_store(self):
+        turns = [("user", "one"), ("assistant", "two"), ("user", "three"), ("assistant", "four")]
+        sid, folder = tether.write_copilot_session(turns, self.work, "name")
+        self.assertEqual(tether.continue_turns("copilot", os.path.join(folder, "events.jsonl")), turns)
+        sid, path = tether.write_claude_session(turns, self.work)
+        self.assertEqual(tether.continue_turns("claude", path), turns)
+        with open(path) as f:
+            lines = [json.loads(x) for x in f]
+        self.assertEqual([x["parentUuid"] for x in lines[1:]], [x["uuid"] for x in lines[:-1]], "each line points at the one before")
+        self.assertTrue(tether.transcript_file("claude", sid) and tether.session_exists("claude", sid))
+
+    def test_a_long_conversation_keeps_the_newest_turns_and_says_what_was_left_out(self):
+        turns = [(("user", "assistant")[i % 2], f"message {i} " + "x" * 40_000) for i in range(10)]
+        kept, dropped = tether.continue_trim(turns, "claude", "copilot")
+        self.assertGreater(dropped, 0)
+        self.assertEqual(kept[0][0], "user")
+        self.assertIn("left out", kept[0][1])
+        self.assertEqual(kept[1], ("assistant", "Understood."))
+        self.assertTrue(kept[-1][1].startswith("message 9 "), "the newest turn is kept")
+        self.assertEqual(tether.continue_trim(turns[:2], "claude", "copilot"), (turns[:2], 0))
+
+    def linked(self, *terminals):
+        self.write_state({"spLIVE": {"name": "work", "terminals": {t: link(session=SESSION, cwd=self.work, pid=4242, pid_started="x", tab_name="one")
+                                                                    for t in (terminals or ("t1",))}}})
+
+    def cont(self, *args, tab_terminals=None, hc=True):
+        """Run `tether continue` with Herdr faked: a new tab t9 appears when asked for; returns what was typed into it."""
+        live = [{"id": "spLIVE", "name": "work", "tabs": [
+            {"id": "tab1", "name": "one", "terminals": [{"terminal": t} for t in (tab_terminals or ["t1"])]},
+            {"id": "tab9", "name": "one · copilot", "terminals": [{"terminal": "t9"}]}]}]
+        where = tether.Where("spLIVE", "work", "t1", "tab1", "one")
+        typed, opened = [], []
+        with mock.patch.object(tether, "resolve_where", return_value=(where, None)), mock.patch.object(tether, "ensure_app"), \
+                mock.patch.object(tether, "herdr_ls", return_value=live), \
+                mock.patch.object(tether, "herdr_do", side_effect=lambda a: opened.append(a) or {"terminal": "t9"}), \
+                mock.patch.object(tether, "find_tool", side_effect=lambda n: "/bin/true" if n != "hc" or hc else None), \
+                mock.patch.object(tether, "tether_cmd", return_value="tether"), \
+                mock.patch.object(tether.subprocess, "run", side_effect=lambda cmd, **k: typed.append(cmd) or mock.Mock(returncode=0)), \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            tether.continue_cmd(list(args))
+        return opened, typed
+
+    def test_continue_opens_a_new_tab_with_the_new_agent_and_leaves_the_original_alone(self):
+        old = self.claude_transcript()
+        with open(old) as f:
+            before = f.read()
+        self.linked()
+        before_state = self.read_state()["spLIVE"]["terminals"]["t1"]
+        opened, typed = self.cont("copilot")
+        self.assertEqual(opened[0][:3], ["tab.new", "--space", "spLIVE"])
+        self.assertIn("one · copilot", opened[0])
+        terms = self.read_state()["spLIVE"]["terminals"]
+        self.assertEqual(terms["t1"], before_state, "the original terminal keeps its agent, session and pid")
+        new = terms["t9"]
+        self.assertEqual((new["agent"], new["tab"], new["tab_name"]), ("copilot", "tab9", "one · copilot"))
+        self.assertNotEqual(new["session"], SESSION)
+        self.assertEqual(new["continued_from"]["session"], SESSION)
+        self.assertEqual(tether.continue_turns("copilot", tether.transcript_file("copilot", new["session"])), self.EXPECTED)
+        self.assertEqual(typed, [["/bin/true", "send", "t9", "tether resume"]])
+        with open(old) as f:
+            self.assertEqual(f.read(), before, "the old session is not touched")
+
+    def test_continue_without_an_agent_goes_to_the_other_one(self):
+        self.claude_transcript()
+        self.linked()
+        self.cont()
+        self.assertEqual(self.read_state()["spLIVE"]["terminals"]["t9"]["agent"], "copilot")
+
+    def test_continue_works_while_the_original_agent_keeps_running(self):
+        self.claude_transcript()
+        self.linked()
+        with mock.patch.object(tether, "_running", return_value=True):
+            self.cont("copilot")
+        self.assertEqual(self.read_state()["spLIVE"]["terminals"]["t1"]["agent"], "claude")
+
+    def test_continue_says_how_to_continue_when_there_is_no_hc(self):
+        self.claude_transcript()
+        self.linked()
+        _, typed = self.cont("copilot", hc=False)
+        self.assertEqual(typed, [])
+        self.assertEqual(self.read_state()["spLIVE"]["terminals"]["t9"]["agent"], "copilot")
+
+    def test_continue_needs_a_conversation_and_a_different_agent(self):
+        self.linked()
+        with self.assertRaises(SystemExit) as ctx:
+            self.cont("copilot")
+        self.assertIn("no conversation yet", str(ctx.exception))
+        self.claude_transcript()
+        with self.assertRaises(SystemExit) as ctx:
+            self.cont("claude")
+        self.assertIn("already uses claude", str(ctx.exception))
+
+    def test_swap_is_still_accepted_as_the_old_name_and_list_json_names_each_links_tab(self):
+        with mock.patch.object(tether, "continue_cmd") as cmd:
+            tether.main(["swap", "copilot"])
+            tether.main(["continue"])
+        self.assertEqual([c.args[0] for c in cmd.call_args_list], [["copilot"], []])
+        self.write_state({"spLIVE": {"name": "work", "terminals": {"t1": link(session=SESSION, tab="tab7")}}})
+        out = io.StringIO()
+        with mock.patch.object(tether, "herdr_ls", return_value=[{"id": "spLIVE", "name": "work"}]), contextlib.redirect_stdout(out):
+            tether.list_json()
+        self.assertEqual(json.loads(out.getvalue())[0]["links"][0]["tab"], "tab7")
+
+    def test_continue_from_the_tab_menu_picks_the_tabs_one_linked_terminal(self):
+        self.claude_transcript()
+        self.linked("t1")
+        live = [{"id": "spLIVE", "name": "work", "tabs": [{"id": "tab1", "name": "one", "terminals": [{"terminal": "t1"}, {"terminal": "t2"}]}]}]
+        with mock.patch.object(tether, "ensure_app"), mock.patch.object(tether, "herdr_ls", return_value=live):
+            where = tether.terminal_in_tab("tab1")
+        self.assertEqual((where.space_id, where.terminal, where.tab, where.tab_name), ("spLIVE", "t1", "tab1", "one"))
+        self.linked("t1", "t2")
+        with mock.patch.object(tether, "ensure_app"), mock.patch.object(tether, "herdr_ls", return_value=live), self.assertRaises(SystemExit) as ctx:
+            tether.terminal_in_tab("tab1")
+        self.assertIn("several linked terminals", str(ctx.exception))
+        self.linked("t7")
+        with mock.patch.object(tether, "ensure_app"), mock.patch.object(tether, "herdr_ls", return_value=live), self.assertRaises(SystemExit) as ctx:
+            tether.terminal_in_tab("tab1")
+        self.assertIn("no agent is linked", str(ctx.exception))
+        with mock.patch.object(tether, "ensure_app"), mock.patch.object(tether, "herdr_ls", return_value=live), self.assertRaises(SystemExit) as ctx:
+            tether.terminal_in_tab("nope")
+        self.assertIn("not found", str(ctx.exception))
+
+
+class ContextStore(TetherTestCase):
+    """`tether context`: a small tree of files (index, topics, one-line facts) every agent can look up, checked in the background."""
+
+    def setUp(self):
+        super().setUp()
+        self.ctx = os.path.join(self.dir, "context")
+        patcher = mock.patch.dict(os.environ, {"TETHER_CONTEXT_DIR": self.ctx})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def run_cmd(self, *args):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            tether.context_cmd(list(args))
+        return out.getvalue()
+
+    def add(self, topic="repos", fact="the orders consumer is in ~/orders", about="where repositories live"):
+        return self.run_cmd("add", topic, fact, "--about", about).strip()
+
+    def test_add_creates_the_topic_and_its_index_line_and_refuses_duplicates(self):
+        self.assertEqual(self.add(), "added")
+        self.assertEqual(self.add(fact="The orders consumer is in ~/orders."), "already there")
+        index, _ = tether.context_index(self.ctx)
+        self.assertEqual(index["repos"], ("repos.md", "where repositories live"))
+        facts = tether.context_facts(self.ctx, "repos")
+        self.assertEqual([f[1] for f in facts], ["the orders consumer is in ~/orders"])
+        self.assertRegex(facts[0][2], r"^\d{4}-\d\d-\d\d$")
+
+    def test_a_new_topic_needs_a_description_and_secrets_are_refused(self):
+        with self.assertRaises(tether.TetherError) as ctx:
+            self.run_cmd("add", "stack", "services use Kafka")
+        self.assertIn("--about", str(ctx.exception))
+        for bad in ("the api key: abc123", "password = hunter2", "deploy with " + "A1b2" * 10):
+            with self.assertRaises(tether.TetherError, msg=bad):
+                self.add(fact=bad)
+        with self.assertRaises(tether.TetherError):
+            self.add(topic="Bad Topic")
+        self.assertEqual(tether.context_topics(self.ctx), [])
+
+    def test_find_matches_all_words_in_facts_and_topic_descriptions_without_a_model(self):
+        self.add()
+        self.add("stack", "services talk over Kafka, see [[repos]]", "stack and how services connect")
+        self.assertIn("repos: the orders consumer", self.run_cmd("find", "orders", "consumer"))
+        self.assertNotIn("stack:", self.run_cmd("find", "orders"))
+        self.assertIn("stack: services talk over Kafka", self.run_cmd("find", "services", "connect"), "a topic description counts toward its facts")
+        self.assertIn("nothing found", self.run_cmd("find", "zzz"))
+        self.assertEqual(json.loads(self.run_cmd("find", "kafka", "--json"))[0]["topic"], "stack")
+
+    def test_find_forgives_the_words_an_agent_guesses(self):
+        self.add("work-tools", "Acme tracks work in Linear", "where tickets and projects live")
+        for words in (("tracking", "work"), ("work", "tools"), ("which", "tool", "we", "use", "to", "track", "our", "work"), ("issue", "tracker")):
+            self.assertIn("work-tools: Acme tracks work in Linear", self.run_cmd("find", *words), words)
+        out = self.run_cmd("find", "kubernetes", "cluster")
+        self.assertIn("nothing found", out)
+        self.assertIn("work-tools: where tickets and projects live", out, "with no hit, the topics are listed so the agent can pick one")
+
+    def kinds(self):
+        return sorted({i["kind"] for i in tether.context_check_issues(self.ctx)})
+
+    def test_check_reports_what_is_wrong_and_nothing_when_all_is_well(self):
+        self.add()
+        self.assertEqual(self.kinds(), [])
+        with open(os.path.join(self.ctx, "orphan.md"), "w") as f:
+            f.write("# orphan\n\n- a fact nobody can find\n")
+        with open(os.path.join(self.ctx, "repos.md"), "a") as f:
+            f.write("- see [[missing]]\n- the orders consumer is in ~/orders\n- old thing  _(2020-01-01, from: x)_\n")
+        with open(os.path.join(self.ctx, "index.md"), "a") as f:
+            f.write("- [gone](gone.md) — a topic whose file was deleted\n")
+        self.assertEqual(self.kinds(), ["duplicate", "index-dead", "link-dead", "orphan", "stale"])
+
+    def test_check_flags_long_files(self):
+        self.add()
+        with open(os.path.join(self.ctx, "repos.md"), "a") as f:
+            f.writelines(f"- fact number {n}\n" for n in range(tether.CONTEXT_TOPIC_MAX + 1))
+        with open(os.path.join(self.ctx, "index.md"), "a") as f:
+            f.writelines(f"- [t{n}](t{n}.md) — x\n" for n in range(tether.CONTEXT_INDEX_MAX))
+        self.assertIn("topic-long", self.kinds())
+        self.assertIn("index-long", self.kinds())
+
+    def test_fix_makes_only_the_safe_repairs_after_taking_a_backup(self):
+        self.add()
+        with open(os.path.join(self.ctx, "orphan.md"), "w") as f:
+            f.write("# orphan\n\n- keep me\n")
+        with open(os.path.join(self.ctx, "repos.md"), "a") as f:
+            f.write("- the orders consumer is in ~/orders\n- [[nowhere]] link stays\n")
+        with open(os.path.join(self.ctx, "index.md"), "a") as f:
+            f.write("- [gone](gone.md) — deleted\n")
+        out = self.run_cmd("check", "--fix")
+        self.assertIn("fixed:", out)
+        index, _ = tether.context_index(self.ctx)
+        self.assertIn("orphan", index)
+        self.assertNotIn("gone", index)
+        self.assertEqual(len(tether.context_facts(self.ctx, "repos")), 2, "the duplicate is gone, the other facts stay")
+        self.assertEqual(self.kinds(), ["link-dead"], "a dead link is reported, never edited away")
+        backups = os.listdir(os.path.join(self.ctx, ".backup"))
+        self.assertEqual(len(backups), 1)
+        with open(os.path.join(self.ctx, ".backup", backups[0], "repos.md")) as f:
+            self.assertEqual(f.read().count("the orders consumer"), 2, "the backup is the store as it was")
+
+    def test_the_background_check_runs_at_most_once_a_day_and_only_with_a_store(self):
+        with mock.patch.object(tether.subprocess, "Popen") as popen:
+            tether.context_check_if_due()
+            popen.assert_not_called()
+            self.add()
+            tether.context_check_if_due()
+            tether.context_check_if_due()
+            self.assertEqual(popen.call_count, 1, "the second launch within a day does nothing")
+            self.assertEqual(popen.call_args.args[0][-3:], ["check", "--background", "--fix"])
+            old = os.path.join(self.ctx, ".last-check")
+            os.utime(old, (0, 0))
+            tether.context_check_if_due()
+            self.assertEqual(popen.call_count, 2)
+
+    def test_a_background_check_leaves_a_report_and_a_hint_is_shown_once(self):
+        self.add()
+        with open(os.path.join(self.ctx, "repos.md"), "a") as f:
+            f.write("- see [[missing]]\n")
+        tether.context_check(["--background"])
+        with open(os.path.join(self.ctx, ".report.json")) as f:
+            self.assertEqual(json.load(f)["issues"][0]["kind"], "link-dead")
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            tether.context_hint()
+            tether.context_hint()
+        self.assertEqual(err.getvalue().count("thing(s) to look at"), 1)
+
+    def test_learn_proposes_facts_and_accept_saves_only_the_chosen_ones(self):
+        self.add()
+        proposal = json.dumps([
+            {"topic": "repos", "fact": "the billing service is in ~/billing", "source": "chat"},
+            {"topic": "stack", "fact": "builds use Gradle", "about": "build tools"},
+            {"topic": "stack", "fact": "the token: abc123 is x"},
+            {"topic": "newtopic", "fact": "has no description"},
+            {"topic": "repos", "fact": "the orders consumer is in ~/orders"}])
+        docs = [{"space_id": "s1", "space": "Work", "state": "open", "agent": "claude", "session": "x", "path": "/none"}]
+        with mock.patch.object(tether, "find_conversations", return_value=docs), \
+                mock.patch.object(tether, "conversation_text", return_value=("USER: hi", 1, 0)), \
+                mock.patch.object(tether, "ask_claude", return_value=(proposal, 0.04)) as ask:
+            out = self.run_cmd("learn", "Work")
+        self.assertIn("2 fact(s) proposed", out)
+        self.assertIn("nothing is saved yet", out)
+        self.assertIn("repos: where repositories live", ask.call_args.args[0])
+        self.assertEqual(len(tether.context_facts(self.ctx, "repos")), 1, "nothing saved by learn")
+        self.run_cmd("accept", "--only", "2")
+        self.assertEqual([f[1] for f in tether.context_facts(self.ctx, "stack")], ["builds use Gradle"])
+        self.assertEqual(len(tether.context_facts(self.ctx, "repos")), 1)
+        self.assertIn("discarded 1", self.run_cmd("reject"))
+        self.assertFalse(os.path.exists(os.path.join(self.ctx, ".proposals.json")))
+
+
+class ContextLearning(TetherTestCase):
+    """The proposal queue and the opt-in background learning: it only ever proposes, it starts from now, and it is capped."""
+
+    def setUp(self):
+        super().setUp()
+        self.ctx = os.path.join(self.dir, "context")
+        patcher = mock.patch.dict(os.environ, {"TETHER_CONTEXT_DIR": self.ctx})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        os.environ.pop("TETHER_CONTEXT_AUTO", None)
+        self.transcripts = []
+        for n in range(4):
+            path = os.path.join(self.dir, f"t{n}.jsonl")
+            with open(path, "w") as f:
+                f.write("x")
+            os.utime(path, (1, 1))  # untouched for a long time: settled
+            self.transcripts.append({"space_id": f"s{n}", "space": f"Space {n}", "state": "open", "agent": "claude", "session": f"sess{n}",
+                                     "path": path, "last_used": f"2026-11-2{n}T00:00:00+00:00"})
+        self.lines = {t["path"]: [f"USER: message {i}" for i in range(2)] for t in self.transcripts}
+
+    def harvest(self, reply='[{"topic": "repos", "fact": "the billing service is in ~/billing", "about": "where repos live"}]', auto=True):
+        calls = []
+
+        def fake_ask(prompt, model, budget=2):
+            calls.append((prompt, model))
+            return reply, 0.02
+
+        with mock.patch.dict(os.environ, {"TETHER_CONTEXT_AUTO": "1" if auto else "0"}), \
+                mock.patch.object(tether, "search_corpus", return_value=self.transcripts), \
+                mock.patch.object(tether, "conversation_text", side_effect=lambda agent, path, cap=0, as_lines=False: self.lines[path]), \
+                mock.patch.object(tether, "ask_claude", side_effect=fake_ask), \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            tether.context_harvest([])
+        return calls
+
+    def grow(self, n=8, which=None):
+        for t in which or self.transcripts:
+            self.lines[t["path"]] = self.lines[t["path"]] + [f"USER: more {i}" for i in range(n)]
+
+    def queue(self):
+        return tether.context_queue(self.ctx)
+
+    def test_it_is_off_by_default(self):
+        self.assertEqual(self.harvest(auto=False), [])
+        self.assertFalse(os.path.exists(os.path.join(self.ctx, ".harvested.json")))
+        with mock.patch.object(tether.subprocess, "Popen") as popen:
+            tether.context_harvest_if_due()
+        popen.assert_not_called()
+
+    def test_turning_it_on_starts_from_now_without_reading_history(self):
+        self.assertEqual(self.harvest(), [], "no model call on the first run")
+        with open(os.path.join(self.ctx, ".harvested.json")) as f:
+            self.assertEqual(sorted(json.load(f)), ["sess0", "sess1", "sess2", "sess3"])
+        self.assertEqual(self.queue(), [])
+
+    def test_conversations_that_grew_are_read_from_the_new_part_and_only_proposed(self):
+        self.harvest()
+        self.grow()
+        calls = self.harvest()
+        self.assertEqual(len(calls), tether.CONTEXT_HARVEST_MAX, "at most three conversations per run")
+        self.assertEqual(calls[0][1], "haiku")
+        self.assertIn("more 0", calls[0][0])
+        self.assertNotIn("message 0", calls[0][0], "only what is new since the last read is sent")
+        self.assertEqual(len(self.queue()), 1, "the same fact proposed again is not queued twice")
+        self.assertEqual(tether.context_topics(self.ctx), [], "nothing is saved by background learning")
+        self.assertEqual(len(self.harvest()), 1, "the fourth conversation is read on the next run")
+        self.assertEqual(self.harvest(), [], "and then nothing is left to read")
+
+    def test_a_conversation_is_not_read_again_until_it_has_grown_enough_or_while_it_is_active(self):
+        self.harvest()
+        self.grow(n=tether.CONTEXT_HARVEST_MIN_NEW - 1, which=self.transcripts[:1])
+        self.assertEqual(self.harvest(), [])
+        self.grow(n=2, which=self.transcripts[:1])
+        os.utime(self.transcripts[0]["path"], None)  # written just now: still in use
+        self.assertEqual(self.harvest(), [])
+        os.utime(self.transcripts[0]["path"], (1, 1))
+        self.assertEqual(len(self.harvest()), 1)
+
+    def test_the_daily_spend_cap_stops_it(self):
+        self.harvest()
+        os.makedirs(self.ctx, exist_ok=True)
+        with open(os.path.join(self.ctx, ".harvest-spend.json"), "w") as f:
+            json.dump({"date": tether.datetime.now().date().isoformat(), "usd": tether.CONTEXT_HARVEST_CAP_USD}, f)
+        self.grow()
+        self.assertEqual(self.harvest(), [])
+
+    def test_a_failed_model_call_stops_the_run_without_marking_conversations_as_read(self):
+        self.harvest()
+        self.grow()
+        with mock.patch.dict(os.environ, {"TETHER_CONTEXT_AUTO": "1"}), mock.patch.object(tether, "search_corpus", return_value=self.transcripts), \
+                mock.patch.object(tether, "conversation_text", side_effect=lambda a, p, cap=0, as_lines=False: self.lines[p]), \
+                mock.patch.object(tether, "ask_claude", side_effect=tether.TetherError("no claude")), \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            tether.context_harvest([])
+        self.assertEqual(len(self.harvest()), tether.CONTEXT_HARVEST_MAX, "still unread, so the next run tries again")
+
+    def test_auto_accept_saves_only_plain_facts_about_existing_topics_and_can_be_undone(self):
+        tether.add_fact(self.ctx, "repos", "the api is in ~/api", about="where repos live")
+        reply = json.dumps([
+            {"topic": "repos", "fact": "the billing service is in ~/billing"},
+            {"topic": "repos", "fact": "deploy with `make ship`"},
+            {"topic": "repos", "fact": "docs live at https://example.com/docs"},
+            {"topic": "tools", "fact": "we use ripgrep", "about": "tools in use"},
+        ])
+        self.harvest()
+        self.grow()
+        with mock.patch.dict(os.environ, {"TETHER_CONTEXT_AUTO_ACCEPT": "1"}):
+            self.harvest(reply=reply)
+        self.assertEqual([f[1] for f in tether.context_facts(self.ctx, "repos")], ["the api is in ~/api", "the billing service is in ~/billing"])
+        self.assertEqual(sorted(op["fact"] for op in self.queue()), ["deploy with `make ship`", "docs live at https://example.com/docs", "we use ripgrep"],
+                         "commands, links and new topics still wait for review")
+        self.assertIn("auto: ", tether.context_facts(self.ctx, "repos")[1][3])
+        log = tether.context_auto_added(self.ctx)
+        self.assertEqual([e["fact"] for e in log], ["the billing service is in ~/billing"])
+        with contextlib.redirect_stdout(io.StringIO()):
+            tether.context_undo(["--only", "1"])
+        self.assertEqual([f[1] for f in tether.context_facts(self.ctx, "repos")], ["the api is in ~/api"])
+        self.assertEqual(tether.context_auto_added(self.ctx), [])
+
+    def test_list_json_and_remove_give_the_window_what_it_needs(self):
+        tether.add_fact(self.ctx, "repos", "the api is in ~/api", source="Space 1", about="where repos live")
+        tether.add_fact(self.ctx, "repos", "the web app is in ~/web", source="auto: Space 2")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            tether.context_list(["--json"])
+        topics = json.loads(out.getvalue())
+        self.assertEqual([(t["topic"], t["about"]) for t in topics], [("repos", "where repos live")])
+        self.assertEqual([(f["fact"], f["auto"]) for f in topics[0]["facts"]], [("the api is in ~/api", False), ("the web app is in ~/web", True)])
+        with contextlib.redirect_stdout(io.StringIO()):
+            tether.context_remove(["repos", "--line", str(topics[0]["facts"][1]["line"])])
+        self.assertEqual([f[1] for f in tether.context_facts(self.ctx, "repos")], ["the api is in ~/api"])
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            tether.context_remove(["repos", "--line", "1"])  # the title line is not a fact
+
+    def test_without_auto_accept_everything_is_queued(self):
+        tether.add_fact(self.ctx, "repos", "the api is in ~/api", about="where repos live")
+        self.harvest()
+        self.grow()
+        self.harvest(reply='[{"topic": "repos", "fact": "the billing service is in ~/billing"}]')
+        self.assertEqual(len(tether.context_facts(self.ctx, "repos")), 1)
+        self.assertEqual(len(self.queue()), 1)
+
+    def test_the_background_job_is_started_at_most_every_six_hours_when_on(self):
+        with mock.patch.dict(os.environ, {"TETHER_CONTEXT_AUTO": "1"}), mock.patch.object(tether.subprocess, "Popen") as popen:
+            tether.context_harvest_if_due()
+            tether.context_harvest_if_due()
+            self.assertEqual(popen.call_count, 1)
+            self.assertEqual(popen.call_args.args[0][-2:], ["harvest", "--background"])
+            os.utime(os.path.join(self.ctx, ".last-harvest"), (0, 0))
+            tether.context_harvest_if_due()
+            self.assertEqual(popen.call_count, 2)
+
+    def test_proposals_are_listed_for_the_ui_and_decided_by_number(self):
+        os.makedirs(self.ctx)
+        tether.add_fact(self.ctx, "repos", "the orders consumer is in ~/orders", about="where repos live")
+        tether.context_queue_save(self.ctx, [
+            {"topic": "repos", "fact": "the billing service is in ~/billing", "about": "", "source": "chat"},
+            {"topic": "tools", "fact": "builds use Gradle", "about": "build tools", "source": "chat"}])
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            tether.context_proposals(["--json"])
+        rows = json.loads(out.getvalue())
+        self.assertEqual([(r["n"], r["topic"], r["new_topic"]) for r in rows], [(1, "repos", False), (2, "tools", True)])
+        with contextlib.redirect_stdout(io.StringIO()):
+            tether.context_decide(["--only", "2"], True)
+        self.assertEqual([f[1] for f in tether.context_facts(self.ctx, "tools")], ["builds use Gradle"])
+        self.assertEqual([op["fact"] for op in self.queue()], ["the billing service is in ~/billing"])
+        with contextlib.redirect_stdout(io.StringIO()):
+            tether.context_decide([], False)
+        self.assertEqual(self.queue(), [])
+
+    def test_the_hint_mentions_waiting_proposals(self):
+        os.makedirs(self.ctx)
+        tether.context_queue_save(self.ctx, [{"topic": "repos", "fact": "x is in ~/x", "about": "a", "source": ""}])
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            tether.context_hint()
+        self.assertIn("1 proposed fact(s) to review", err.getvalue())
+
+
+class Settings(TetherTestCase):
+    """`tether config`: every default in config.json as a validated setting, with where its value comes from."""
+
+    def setUp(self):
+        super().setUp()
+        for k in [k for k in os.environ if k.startswith("TETHER_") and k not in ("TETHER_STATE_DIR", "TETHER_NO_ADOPT")]:
+            patcher = mock.patch.dict(os.environ)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+            os.environ.pop(k)
+        patcher = mock.patch.dict(os.environ, {"TETHER_BACKUP_DIR": "", "TETHER_CONTEXT_DIR": ""})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        for k in ("TETHER_BACKUP_DIR", "TETHER_CONTEXT_DIR"):
+            os.environ.pop(k)
+
+    def cfg(self, *args):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            tether.config_cmd(list(args))
+        return out.getvalue()
+
+    def rows(self):
+        return {r["key"]: r for r in json.loads(self.cfg("--json"))}
+
+    def test_every_setting_is_listed_with_its_default_and_where_the_value_comes_from(self):
+        rows = self.rows()
+        self.assertEqual([r["key"] for r in tether.SETTINGS], list(rows))
+        self.assertEqual((rows["auto"]["value"], rows["auto"]["source"]), (False, "default"))
+        self.assertEqual((rows["default_agent"]["value"], rows["context_model"]["value"], rows["search_model"]["value"]), ("claude", "haiku", "sonnet"))
+        self.assertEqual(rows["context_agent"]["value"], "claude")
+        self.assertFalse(rows["home_dir"]["editable"])
+        self.assertTrue(rows["context_auto"]["privacy"])
+
+    def test_set_validates_saves_and_resets(self):
+        self.cfg("set", "auto", "on")
+        self.cfg("set", "default_agent", "copilot")
+        self.cfg("set", "context_model", "sonnet")
+        rows = self.rows()
+        self.assertEqual([(rows[k]["value"], rows[k]["source"]) for k in ("auto", "default_agent", "context_model")],
+                         [(True, "config"), ("copilot", "config"), ("sonnet", "config")])
+        self.assertEqual(tether.default_agent(), "copilot")
+        self.assertEqual(self.cfg("get", "default_agent").strip(), "copilot")
+        self.cfg("set", "default_agent", "default")
+        self.assertEqual(self.rows()["default_agent"]["source"], "default")
+        for bad in (("auto", "maybe"), ("default_agent", "pi"), ("nothing", "x"), ("home_dir", "/no/such/folder"), ("home_dir", os.path.expanduser("~"))):
+            with self.assertRaises((tether.TetherError, SystemExit), msg=str(bad)):
+                self.cfg("set", *bad)
+
+    def test_an_environment_variable_wins_and_is_reported_as_the_source(self):
+        self.cfg("set", "default_agent", "copilot")
+        with mock.patch.dict(os.environ, {"TETHER_DEFAULT_AGENT": "claude", "TETHER_AUTO_BACKUP": "1"}):
+            rows = self.rows()
+            self.assertEqual((rows["default_agent"]["value"], rows["default_agent"]["source"], rows["default_agent"]["env"]),
+                             ("claude", "env", "TETHER_DEFAULT_AGENT"))
+            self.assertEqual((rows["auto"]["value"], rows["auto"]["source"]), (True, "env"))
+            self.assertIn("overrides", self.cfg("set", "default_agent", "copilot"))
+
+    def test_the_older_home_dir_syntax_still_works_and_a_bad_default_agent_falls_back_to_claude(self):
+        folder = os.path.join(self.dir, "start")
+        os.makedirs(folder)
+        self.cfg("home_dir", folder)
+        self.assertEqual(self.rows()["home_dir"]["value"], folder)
+        with open(os.path.join(self.dir, "config.json"), "w") as f:
+            json.dump({"default_agent": "bogus"}, f)
+        self.assertEqual(tether.default_agent(), "claude")
+
+
 class ReadAnotherConversation(TetherTestCase):
     """`tether read`: what another space's conversation said, user and assistant text only."""
 

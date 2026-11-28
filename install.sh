@@ -118,9 +118,11 @@ if [ "$MODE" = uninstall ]; then
   backup "$HERDR_DIR/layouts/$LAYOUT_NAME.json"; rm -f "$HERDR_DIR/layouts/$LAYOUT_NAME.json"
   for m in ${mods[@]+"${mods[@]}"}; do backup "$HERDR_DIR/mods/$m"; rm -rf "$HERDR_DIR/mods/$m"; done
   backup "$BIN_DIR/tether"; rm -f "$BIN_DIR/tether"
-  backup "$SKILL_ROOT/tether"; rm -rf "$SKILL_ROOT/tether"
-  [ -L "$AGENTS_SKILLS/tether" ] && rm -f "$AGENTS_SKILLS/tether"
-  echo "Removed: $BIN_DIR/tether, the skill, ${#mods[@]} mod(s) and the layout (copies are in $BACKUP_DIR)."
+  for skill in tether tether-context; do
+    backup "$SKILL_ROOT/$skill"; rm -rf "${SKILL_ROOT:?}/$skill"
+    if [ -L "$AGENTS_SKILLS/$skill" ]; then rm -f "$AGENTS_SKILLS/$skill"; fi
+  done
+  echo "Removed: $BIN_DIR/tether, the skills, ${#mods[@]} mod(s) and the layout (copies are in $BACKUP_DIR)."
   echo "Kept: your space links ($STATE_DIR) and conversation backups (~/.local/share/tether/backups)."
   echo "Delete them too only if you will not use tether again: rm -rf \"$STATE_DIR\" ~/.local/share/tether"
   echo "If you let the installer set cleanupPeriodDays in ~/.claude/settings.json, that setting stays."
@@ -173,20 +175,24 @@ backup "$BIN_DIR/tether" "$HERE/bin/tether"
 cp "$HERE/bin/tether" "$BIN_DIR/tether"
 chmod +x "$BIN_DIR/tether"
 
-say "Claude skill -> $SKILL_ROOT/tether"
-mkdir -p "$SKILL_ROOT/tether"
-backup "$SKILL_ROOT/tether/SKILL.md" "$HERE/skill/SKILL.md"
-cp "$HERE/skill/SKILL.md" "$SKILL_ROOT/tether/SKILL.md"
-
-# Copilot CLI does not read ~/.claude/skills; it reads ~/.agents/skills. Link the skill there so both
-# agents share one copy.
-mkdir -p "$AGENTS_SKILLS"
-if [ ! -e "$AGENTS_SKILLS/tether" ] || [ -L "$AGENTS_SKILLS/tether" ]; then
-  say "Copilot skill -> $AGENTS_SKILLS/tether (link to $SKILL_ROOT/tether)"
-  ln -sfn "$SKILL_ROOT/tether" "$AGENTS_SKILLS/tether"
-else
-  warn "$AGENTS_SKILLS/tether exists and is not a link; left alone, so Copilot may have a different copy"
-fi
+# Two skills: tether (the commands) and tether-context (looking up and remembering facts about your environment).
+for pair in "skill:tether" "skill-context:tether-context"; do
+  src_dir="${pair%%:*}"; skill="${pair##*:}"
+  [ -f "$HERE/$src_dir/SKILL.md" ] || continue
+  say "Claude skill -> $SKILL_ROOT/$skill"
+  mkdir -p "$SKILL_ROOT/$skill"
+  backup "$SKILL_ROOT/$skill/SKILL.md" "$HERE/$src_dir/SKILL.md"
+  cp "$HERE/$src_dir/SKILL.md" "$SKILL_ROOT/$skill/SKILL.md"
+  # Copilot CLI does not read ~/.claude/skills; it reads ~/.agents/skills. Link the skill there so both
+  # agents share one copy.
+  mkdir -p "$AGENTS_SKILLS"
+  if [ ! -e "$AGENTS_SKILLS/$skill" ] || [ -L "$AGENTS_SKILLS/$skill" ]; then
+    say "Copilot skill -> $AGENTS_SKILLS/$skill (link to $SKILL_ROOT/$skill)"
+    ln -sfn "$SKILL_ROOT/$skill" "$AGENTS_SKILLS/$skill"
+  else
+    warn "$AGENTS_SKILLS/$skill exists and is not a link; left alone, so Copilot may have a different copy"
+  fi
+done
 
 say "Herdr mods -> $HERDR_DIR/mods"
 MODS=()
@@ -221,7 +227,7 @@ if command -v herdr-app >/dev/null; then
     for name in "${MODS[@]}"; do restore "$HERDR_DIR/mods/$name"; done
     restore "$HERDR_DIR/layouts/$LAYOUT_NAME.json"
     restore "$HERDR_DIR/shared.json"
-    die "tether's Herdr mods do not load with Herdr ${HERDR_VERSION:-(unknown version)}; the tether command itself is installed. Please report this (README: Troubleshooting)."
+    die "tether's Herdr mods do not load with Herdr ${HERDR_VERSION:-(unknown version)}; the tether command itself is installed. Please report this (docs/troubleshooting.md)."
   fi
 else
   warn "herdr-app is not on PATH; skipped the mod checks"
@@ -273,7 +279,7 @@ fi
 
 # What tether needs at run time (it also looks in ~/.local/bin, /opt/homebrew/bin and /usr/local/bin).
 for tool in herdr-app hc claude; do
-  command -v "$tool" >/dev/null || [ -x "$BIN_DIR/$tool" ] || warn "'$tool' not found; tether needs it (README, Prerequisites)"
+  command -v "$tool" >/dev/null || [ -x "$BIN_DIR/$tool" ] || warn "'$tool' not found; tether needs it (docs/install.md, Requirements)"
 done
 command -v copilot >/dev/null || echo "note: 'copilot' not found; only 'tether copilot' needs it"
 case ":$PATH:" in

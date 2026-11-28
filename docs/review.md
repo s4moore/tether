@@ -54,6 +54,37 @@ Why tether is built the way it is, what has been checked, and where it can let y
   agents started from `~` start in `home_dir` instead. Existing home sessions keep resuming in home (Claude looks sessions up by
   folder, so moving one is unsafe). Side effect: Claude's auto-memory is per folder.
 
+## Continue in the other agent
+
+- **Continuing is a translation, not a resume.** The new agent has the conversation as its history, but not the old agent's tool
+  history: tool calls and results are short notes, not real tool turns, and images, attachments and thinking are dropped. It
+  may read the notes differently from the agent that ran the tools.
+- **Different agents behave differently** (models, tools, permissions, system prompts); the conversation carries over, the
+  behaviour does not.
+- **Both transcript formats are agent internals.** Copilot refuses a session file that does not match its schema, and either
+  agent may change. Failures are loud (Copilot names the field), and the tests pin the written format.
+- **Context size:** a long conversation keeps only its newest 150,000 characters, which can still exceed the target agent's
+  window.
+- **It reads a snapshot.** The original agent may still be running; messages it has not written to its transcript yet are
+  not carried over, and nothing flows back afterwards: the two tabs are separate conversations from the moment you continue.
+- **Copilot sessions written by `continue` have no shutdown event** (it needs statistics tether does not have).
+
+## Context store
+
+- **Facts go stale.** Nothing verifies them against the machine; dates and sources on each line, and the "older than a year"
+  report, are how stale ones are spotted. A path in the store should be checked before it is relied on.
+- **Retrieval is only as good as the index lines and the wording of facts.** `find` is a plain word match: "kafka consumer"
+  finds a fact that says those words, not one that says "event listener". Topic descriptions are searched too.
+- **Not secret-safe by design.** The filter catches obvious assignments and long token-like strings, not everything. The store
+  is plain text; the skill tells agents never to put secrets in it.
+- **`learn` sends conversation text to Claude** and can propose things that are true only for one task; every fact is
+  reviewed by a person before it is saved.
+- **Background learning reads your conversations without a button press**, so it is opt-in. It sends only text (never tool output) of
+  new parts of conversations to Claude, within a daily cap, and only queues proposals. Proposals from a small, cheap model can be
+  wrong, one-off or oddly worded; every one is reviewed before it is saved. It starts from the moment it is turned on.
+- **The background check only fixes what is mechanical.** It never rewrites facts or merges topics; a long topic has to be split by
+  hand (or with an agent's help).
+
 ## Search and read
 
 - **Three tiers so the costly one only runs on request.** Tier 1 is a free local keyword match (well under a second on a large

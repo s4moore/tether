@@ -6,6 +6,14 @@ import { props, closeOverlay, theme, exec, home, notify } from "herdr";
 
 const TETHER = () => `${home()}/.local/bin/tether`;
 
+// ---- the look shared by every tether popup: title + Esc keycap, grouped cards with hairlines ----
+const header = (t, title, sub) => h_flex().px(2).pt(2).pb(2).items_center().gap(10).flex_none()
+  .child(v_flex().flex_1().min_w(0).gap(1)
+    .child(div().text_size(15).font_medium().text_color(t.foreground).child(title))
+    .when(Boolean(sub), (el) => el.child(div().text_size(11.5).text_color(t.dim).child(sub))))
+  .child(div().flex_none().h(18).px(6).flex().items_center().rounded(5).border_1().border_color(t.border).text_size(10).text_color(t.dim).child("Esc"));
+const divided = (t, rows) => rows.flatMap((r, i) => (i ? [div().h(1).w_full().bg(t.border), r] : [r]));
+
 function ago(iso) {
   const secs = (Date.now() - Date.parse(iso)) / 1000;
   if (!Number.isFinite(secs)) return "";
@@ -76,7 +84,7 @@ export default class SpaceHistory extends View {
       const fresh = !live && !restorable;
       const agents = [...new Set(row.links.map((l) => l.agent))].join(" · ");
       const forked = row.forked_from ? `fork of ${row.forked_from} · ` : "";
-      return h_flex().id(`sh-${row.id}`).px(10).h(40).flex_none().items_center().gap(10).rounded(8)
+      return h_flex().id(`sh-${row.id}`).px(12).h(50).flex_none().items_center().gap(10)
         .cursor_pointer().hover((s) => s.bg(t.hover)).on_click(() => this.reopen(row))
         .child(v_flex().flex_1().min_w(0)
           .child(div().truncate().text_size(13).text_color(t.foreground).child(row.name))
@@ -91,14 +99,13 @@ export default class SpaceHistory extends View {
           .child(svg("mods/workspace-chrome/archive.svg").size(14)));
     };
     return v_flex().id("space-history").track_focus(this.handle).on_key_down((e, cx) => this.key(e, cx))
-      .w_full().h(380).min_h(0).p(8).bg(t.popover).text_color(t.foreground)
-      .child(h_flex().px(10).h(28).flex_none().items_center()
-        .child(div().flex_1().text_size(11.5).text_color(t.dim).child("Previous spaces, most recent first"))
-        .child(div().text_size(11).text_color(t.dim).child("Esc")))
-      .child(v_flex().id("space-history-list").flex_1().min_h(0).overflow_y_scrollbar().gap(2)
+      .w_full().h(420).min_h(0).p(12).gap(8).bg(t.popover).text_color(t.foreground)
+      .child(header(t, "Reopen a space", "Previous spaces, most recent first"))
+      .child(v_flex().id("space-history-list").flex_1().min_h(0).overflow_y_scrollbar()
+        .when(rows !== null && rows.length > 0, (el) => el.rounded(10).border_1().border_color(t.border).bg(t.background))
         .when(rows === null, (el) => el.child(div().p(10).text_size(12).text_color(t.dim).child("Loading…")))
         .when(rows !== null && this.error, (el) => el.child(div().p(10).text_size(12).text_color(t.blocked).child(`Could not read tether: ${this.error}`)))
         .when(rows !== null && !this.error && rows.length === 0, (el) => el.child(div().p(10).text_size(12).text_color(t.dim).child("No closed spaces with a linked session yet. Spaces you archived are in the archive button (Backups).")))
-        .children((rows ?? []).map(line)));
+        .children(divided(t, (rows ?? []).map(line))));
   }
 }

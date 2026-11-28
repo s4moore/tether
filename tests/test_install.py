@@ -65,6 +65,8 @@ class Installer(Sandbox):
         self.assertTrue(os.access(os.path.join(self.bin, "tether"), os.X_OK))
         self.assertTrue(os.path.exists(os.path.join(self.home, ".claude", "skills", "tether", "SKILL.md")))
         self.assertTrue(os.path.islink(os.path.join(self.home, ".agents", "skills", "tether")))
+        self.assertTrue(os.path.exists(os.path.join(self.home, ".claude", "skills", "tether-context", "SKILL.md")))
+        self.assertTrue(os.path.islink(os.path.join(self.home, ".agents", "skills", "tether-context")))
         for mod in os.listdir(os.path.join(ROOT, "herdr", "mods")):
             self.assertTrue(os.path.exists(os.path.join(self.herdr, "mods", mod, "main.js")), mod)
         self.assertEqual(self.shared(), {"theme": "dark", "layout": "tether"}, "only the layout key may change")
@@ -125,6 +127,8 @@ class Installer(Sandbox):
         self.assertFalse(os.path.exists(os.path.join(self.bin, "tether")))
         self.assertFalse(os.path.exists(os.path.join(self.home, ".claude", "skills", "tether")))
         self.assertFalse(os.path.lexists(os.path.join(self.home, ".agents", "skills", "tether")))
+        self.assertFalse(os.path.exists(os.path.join(self.home, ".claude", "skills", "tether-context")))
+        self.assertFalse(os.path.lexists(os.path.join(self.home, ".agents", "skills", "tether-context")))
         self.assertEqual([m for m in os.listdir(os.path.join(self.herdr, "mods")) if m.startswith("tether-")], [])
         self.assertNotIn("layout", self.shared())
         self.assertTrue(os.path.isdir(os.path.join(self.home, ".local", "share", "tether", "backups")), "backups are never removed")
@@ -157,7 +161,7 @@ class Bootstrap(Sandbox):
         self.assertIn("checking the checksum", r.stdout)
         self.assertTrue(os.access(os.path.join(self.bin, "tether"), os.X_OK))
         out = subprocess.run([os.path.join(self.bin, "tether"), "--version"], capture_output=True, text=True).stdout
-        self.assertEqual(out.strip(), "tether 0.1.2")
+        self.assertEqual(out.strip(), "tether " + open(os.path.join(ROOT, "VERSION")).read().strip())
 
     def test_get_sh_installs_nothing_when_the_checksum_is_wrong(self):
         r = self.run_get(self.release(tamper=True))

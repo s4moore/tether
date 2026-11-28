@@ -5,7 +5,7 @@
 #   curl -fsSL https://raw.githubusercontent.com/s4moore/tether/main/get.sh | sh -s -- --uninstall
 #   TETHER_VERSION=0.1.0 sh get.sh        # a specific version instead of the latest
 #
-# Nothing is installed outside what install.sh does (see the README). To read everything first, download
+# Nothing is installed outside what install.sh does (see docs/install.md). To read everything first, download
 # the release yourself (see "Install" in the README) and run ./install.sh from it.
 set -eu
 

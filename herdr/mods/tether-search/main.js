@@ -15,6 +15,13 @@ import { props, closeOverlay, theme, exec, home, notify, run } from "herdr";
 const TETHER = () => `${home()}/.local/bin/tether`;
 const POPUP_HEIGHT = 620;
 
+// ---- the look shared by every tether popup: title + Esc keycap, grouped cards with hairlines ----
+const header = (t, title, sub) => h_flex().px(2).pt(2).pb(2).items_center().gap(10).flex_none()
+  .child(v_flex().flex_1().min_w(0).gap(1)
+    .child(div().text_size(15).font_medium().text_color(t.foreground).child(title))
+    .when(Boolean(sub), (el) => el.child(div().text_size(11.5).text_color(t.dim).child(sub))))
+  .child(div().flex_none().h(18).px(6).flex().items_center().rounded(5).border_1().border_color(t.border).text_size(10).text_color(t.dim).child("Esc"));
+
 function ago(iso) {
   const secs = (Date.now() - Date.parse(iso)) / 1000;
   if (!Number.isFinite(secs)) return "";
@@ -145,26 +152,23 @@ export default class TetherSearch extends View {
   button(id, label, kind, enabled, onClick, grow = false) {
     const t = theme();
     const primary = kind === "primary";
-    return h_flex().id(id).h(grow ? 34 : 28).px(12).items_center().justify_center().rounded(8).border_1().text_size(12).font_medium()
+    return h_flex().id(id).h(grow ? 34 : 26).px(12).items_center().justify_center().rounded(8).border_1().text_size(12).font_medium().flex_none()
       .when(grow, (el) => el.flex_1().min_w(0))
-      .border_color(primary ? t.solid : t.input).bg(primary ? t.solid : t.raised)
-      .text_color(primary ? t.solid_foreground : t.foreground)
-      .when(enabled, (el) => el.cursor_pointer().hover((s) => s.opacity(0.88)).on_click(onClick))
-      .when(!enabled, (el) => el.opacity(0.45))
+      .border_color(primary && enabled ? t.solid : t.border).bg(primary && enabled ? t.solid : t.background)
+      .text_color(primary && enabled ? t.solid_foreground : (enabled ? t.foreground : t.dim))
+      .when(enabled, (el) => el.cursor_pointer().hover((s) => s.opacity(0.85)).on_click(onClick))
       .child(label);
   }
 
+  // A scope as a chip (a row of checkboxes did not fit the popup): on = outlined and ticked.
   checkbox(key, label) {
     const t = theme();
     const on = this.scopes[key];
-    return h_flex().id(`sc-${key}`).gap(6).items_center().cursor_pointer().on_click((_e, cx) => {
-      this.scopes[key] = !on;
-      cx.notify();
-    })
-      .child(div().size(15).flex_none().flex().items_center().justify_center().rounded(4).border_1()
-        .border_color(on ? t.solid : t.input).bg(on ? t.solid : t.background).text_size(10).text_color(t.solid_foreground)
-        .child(on ? "✓" : ""))
-      .child(div().text_size(12).text_color(t.foreground).child(label));
+    return h_flex().id(`sc-${key}`).h(26).px(11).gap(5).flex_none().items_center().rounded(13).border_1().text_size(12).cursor_pointer()
+      .border_color(on ? t.foreground : t.border).bg(on ? t.hover : t.background).text_color(on ? t.foreground : t.dim)
+      .on_click((_e, cx) => { this.scopes[key] = !on; cx.notify(); })
+      .when(on, (el) => el.child(div().text_size(10).child("✓")))
+      .child(label);
   }
 
   render() {
@@ -182,7 +186,7 @@ export default class TetherSearch extends View {
     const line = (r) => {
       const expandable = Boolean(r.quote) || r.snippets?.length > 0;
       const open = expandable && this.expanded.has(r.session);
-      return v_flex().id(`sr-${r.session}`).px(10).py(8).gap(2).flex_none().rounded(8)
+      return v_flex().id(`sr-${r.session}`).px(12).py(9).gap(2).flex_none()
       .hover((s) => s.bg(t.hover))
       // Click anywhere on the row except the Open button to show or hide all the matching text.
       .when(expandable, (el) => el.cursor_pointer().on_click((_e, cx) => {
@@ -194,7 +198,6 @@ export default class TetherSearch extends View {
         .child(div().flex_1().min_w(0).truncate().text_size(12.5).font_medium().text_color(t.foreground)
           .child(`${r.space}${r.tab && !/^\d+$/.test(r.tab) && r.tab.toLowerCase() !== r.agent ? ` · ${r.tab}` : ""}`))
         .child(pill(r.state))
-        .child(div().flex_none().w(30).text_size(11).text_color(t.dim).child(`${r.score}`))
         .child(this.button(`sr-open-${r.session}`, r.state === "deleted" ? "Restore & open" : "Open", "plain", idle, (_e, cx) => { cx.stop_propagation(); this.open(r, cx); })))
       .when(Boolean(r.why), (el) => el.child(div().text_size(11.5).text_color(t.foreground).child(r.why)))
       .when(Boolean(r.quote) && !open, (el) => el.child(div().text_size(11).text_color(t.dim).child(`“${r.quote}”`)))
@@ -215,35 +218,36 @@ export default class TetherSearch extends View {
     };
     const status = () => {
       if (this.busy) return `${this.busy} ${this.secs}s${this.secs >= 30 ? " (taking longer than usual; Esc closes the popup, the work stops being shown)" : ""}`;
-      if (!m) return "Search words finds your exact words anywhere in a conversation (instant, free). Search with AI also understands a description of what you remember, and uses one Claude call.";
+      if (!m) return "Search words matches your exact words: instant and free. Search with AI also understands a description, with one Claude call.";
       const base = `${plural(rows.length, "match")} in ${plural(m.corpus, "conversation")}`;
       const words = m.terms?.length ? ` for ${m.terms.join(", ")}` : "";
       if (m.tier === 1) return rows.length ? `${base}${words}. Search with AI ranks these with Claude and can match a description too.`
         : `Nothing in ${plural(m.corpus, "conversation")} has those words${words ? ` (${m.terms.join(", ")})` : ""}. Search with AI can still look at your most recent conversations.`;
       return `${m.fallback ? `Nothing had those words, so Claude looked at your ${plural(est?.rank_candidates ?? 0, "most recent conversation")}: ` : ""}${base}, ranked by ${m.model}${m.cost_usd ? ` · cost $${m.cost_usd.toFixed(3)}` : ""}.`;
     };
+    const haveList = rows !== null && rows.length > 0;
     return v_flex().id("tether-search").track_focus(this.handle).on_key_down((e, cx) => this.key(e, cx))
-      .w_full().h(POPUP_HEIGHT).p(16).gap(10).bg(t.popover).text_color(t.foreground)
-      .child(h_flex().items_center().child(div().flex_1().text_size(15).font_semibold().child("Search conversations"))
-        .child(div().text_size(11).text_color(t.dim).child("Esc")))
-      .child(Input.new(this.input).h(36).px(10).rounded(9).border_1().border_color(t.input).bg(t.background).text_size(12.8).text_color(t.foreground))
-      .child(h_flex().gap(16).items_center()
-        .child(div().text_size(11.5).text_color(t.dim).child("Search in"))
-        .child(this.checkbox("open", "Open spaces"))
-        .child(this.checkbox("closed", "Closed spaces"))
-        .child(this.checkbox("deleted", "Archived spaces")))
-      .when(this.scopes.deleted, (el) => el.child(div().text_size(11).text_color(t.blocked).child(
-        "Archived spaces are searched in the backup. Their conversations are never in an open or closed space, so the AI steps may read more text: higher token cost.")))
+      .w_full().h(POPUP_HEIGHT).p(12).gap(10).bg(t.popover).text_color(t.foreground)
+      .child(header(t, "Search conversations", "Find a conversation by what was said in it"))
+      .child(Input.new(this.input).h(36).px(10).rounded(9).border_1().border_color(t.border).bg(t.background).text_size(12.8).text_color(t.foreground))
+      .child(h_flex().gap(6).items_center()
+        .child(div().text_size(11.5).text_color(t.dim).mr(4).child("In"))
+        .child(this.checkbox("open", "Open"))
+        .child(this.checkbox("closed", "Closed"))
+        .child(this.checkbox("deleted", "Archived")))
+      .when(this.scopes.deleted, (el) => el.child(div().text_size(11).text_color(t.dim).child(
+        "Archived spaces are searched in the backup, so the AI steps may read more text: a higher token cost.")))
       .child(h_flex().gap(8)
         .child(this.button("ts-search", "Search words", "primary", canSearch, (_e, cx) => this.search(cx), true))
         .child(this.button("ts-ai", est && m?.tier === 1 ? `Search with AI · ~${tokens(est.rank_tokens)} tokens` : "Search with AI", "plain", canSearch, (_e, cx) => this.ai(cx), true)))
       .child(div().text_size(11.5).text_color(this.busy ? t.foreground : t.dim).child(status()))
       .when(this.error, (el) => el.child(div().text_size(12).text_color(t.blocked).child(this.error)))
-      .child(v_flex().id("ts-list").flex_1().min_h(0).overflow_y_scrollbar().gap(1).rounded(8).border_1().border_color(t.border).py(4)
-        .when(rows === null, (el) => el.child(div().p(10).text_size(12).text_color(t.dim).child("Results appear here.")))
-        .when(rows !== null && rows.length === 0, (el) => el.child(div().p(10).text_size(12).text_color(t.dim).child("Nothing matched those words.")))
-        .children((rows ?? []).map(line)))
-      .child(div().text_size(11).text_color(t.dim).child(
-        "Search with AI sends short digests of your conversations to Claude, never tool output and never a whole conversation. Estimates are rough (about 4 characters a token)."));
+      .child(v_flex().id("ts-list").flex_1().min_h(0).overflow_y_scrollbar()
+        .when(haveList, (el) => el.rounded(10).border_1().border_color(t.border).bg(t.background))
+        .when(rows === null, (el) => el.child(div().pt(24).flex().justify_center().text_size(12).text_color(t.dim).child("Results appear here")))
+        .when(rows !== null && rows.length === 0, (el) => el.child(div().pt(24).flex().justify_center().text_size(12).text_color(t.dim).child("Nothing matched those words")))
+        .children((rows ?? []).flatMap((r, i) => (i ? [div().h(1).w_full().bg(t.border), line(r)] : [line(r)]))))
+      .child(div().text_size(10.5).text_color(t.dim).child(
+        "Search with AI sends short digests of your conversations to Claude: never tool output, never a whole conversation."));
   }
 }

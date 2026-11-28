@@ -113,6 +113,11 @@ export default class Spaces extends View {
     openOverlay({ mod: "tether-history", kind: "popup", width: 340, height: 380 });
   }
 
+  // tether's defaults (mod tether-settings).
+  settings() {
+    openOverlay({ mod: "tether-settings", kind: "popup", width: 480, height: 560 });
+  }
+
   // Search conversations by what was said (mod tether-search).
   search() {
     openOverlay({ mod: "tether-search", kind: "popup", width: 520, height: 620 });
@@ -296,7 +301,7 @@ export default class Spaces extends View {
 
   menu(w) {
     // A popup is as tall as its items; height is only the most.
-    openOverlay({ mod: "tether-menu", kind: "popup", width: 200, height: 380, props: { tab: "space", target: { id: w.id } } });
+    openOverlay({ mod: "tether-menu", kind: "popup", width: 220, height: 500, props: { tab: "space", target: { id: w.id } } });
   }
 
   orderingDue(now) {
@@ -527,6 +532,9 @@ export default class Spaces extends View {
         .when(collapsed, el => el.pl(0).pr(0).justify_center())
         .when(!collapsed, el => el.child("Spaces"))
         .child(h_flex().flex_none().items_center().gap(collapsed ? 0 : 2)
+          .when(!collapsed, el => el.child(div().id("tether-settings").size(26).flex_none().flex().items_center().justify_center().rounded(6).hover(s => s.bg(t.hover).text_color(t.foreground))
+            .tooltip("tether settings: defaults for backups, learning, models and the + button")
+            .on_click(() => this.settings()).child(svg("mods/workspace-chrome/settings.svg").size(14))))
           .when(!collapsed, el => el.child(div().id("tether-search").size(26).flex_none().flex().items_center().justify_center().rounded(6).hover(s => s.bg(t.hover).text_color(t.foreground))
             .tooltip("Search conversations: describe what you remember")
             .on_click(() => this.search()).child(svg("mods/workspace-chrome/search.svg").size(14))))
@@ -537,7 +545,7 @@ export default class Spaces extends View {
             .tooltip("Reopen a previous space")
             .on_click(() => this.history()).child(svg("mods/workspace-chrome/clock.svg").size(14)))
           .child(div().id("space-new").size(collapsed ? 24 : 26).flex_none().flex().items_center().justify_center().rounded(6).hover(s => s.bg(t.hover).text_color(t.foreground))
-            .tooltip("New space with a tether Claude session. Shift-click for a plain space with no tether.")
+            .tooltip("New space with a tether agent session (the agent is a setting). Shift-click for a plain space with no tether.")
             .on_click((e) => this.newSpace(e, undefined)).child(svg("mods/workspace-chrome/plus.svg").size(14)))))
       .child(v_flex().flex_1().min_h(0).px(collapsed ? 0 : 8).pb(14).overflow_y_scrollbar().mode("always")
         .on_mouse_up("left", (_e, cx) => { this.pressed = null; cx.notify(); })

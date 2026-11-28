@@ -36,6 +36,31 @@ tether: persistent Claude / Copilot sessions for herdr-app spaces.
                                      --deep reads the full text of the top few (--sessions id,id for
                                      chosen ones) with one Claude call each. `deleted` also searches
                                      the backup of deleted spaces. Prints an estimate of the token cost.
+    tether continue [claude|copilot] [--tab <tab-id>]   (alias: tether swap)
+                                     continue this terminal's conversation with the other agent, in a NEW tab:
+                                     a new session is written in its store from the transcript (text, with
+                                     tool calls and results as short notes), linked to the new tab, which
+                                     starts it. The original tab and session are untouched (the agent there
+                                     may keep running). --tab (the tab menu's "Continue in ...") names the tab.
+    tether context add <topic> "fact" [--about "what a new topic covers"] [--source "where from"]
+    tether context find <words> | list [topic] | check [--fix] | learn <space> | proposals | accept [--only 1,3] | reject
+                                     a small knowledge base every agent can look up (default
+                                     ~/.local/share/tether/context): index.md has one line per topic, each
+                                     topic file has one-line dated facts that can link to other topics with
+                                     [[topic]]. `find` searches it all with no model call. `check` reports
+                                     dead links, topics missing from the index, duplicates, long files and
+                                     stale facts (--fix repairs the safe ones after a backup); it also runs by
+                                     itself in the background, at most once a day, when an agent is launched.
+                                     `learn` proposes facts from a conversation (one model call) into a queue
+                                     (`proposals`); nothing is saved until `accept`. With "context_auto" on, a
+                                     background job (at most every 6 h) reads conversations that have grown and
+                                     queues proposals the same way (haiku, at most 3 conversations and $0.50 a
+                                     day; enabling it starts from now). "context_auto_accept" lets that job save plain facts about
+                                     topics you already have without review (never a command, link or new
+                                     topic); `recent` lists them and `undo --only N|--all` removes them.
+                                     `list --json` gives every topic with its facts and line numbers, and
+                                     `remove <topic> --line N` deletes one fact (the Context window uses both).
+                                     Facts are plain text: never store secrets.
     tether read <space> [--last N] [--commands] [--full] [--id X | --session S] [--json]
                                      print what a space's conversation said (the last N messages, default
                                      12, each cut at 1,500 characters unless --full): to bring context from
@@ -61,10 +86,15 @@ tether: persistent Claude / Copilot sessions for herdr-app spaces.
     tether --version                 print the version of tether
     tether doctor [--json]           check the install, Herdr, links and backups; says how to fix each
                                      problem. Exit status 1 if something needs attention.
-    tether config [home_dir [path|--unset|--default]]
-                                     show or change settings. home_dir: a folder to start NEW agents
-                                     in when you are in your home folder (default ~/.local/share/tether/home; --unset turns it off). (Claude asks "trust this
-                                     folder?" for home on every start, but remembers other folders)
+    tether config [--json | get <key> | set <key> <value|default> | home_dir [path|--unset|--default]]
+                                     show or change settings (the Herdr settings popup, the gear in the
+                                     spaces header, does the same): `tether config` lists each with its value
+                                     and where it comes from (default, config.json or an environment
+                                     variable, which wins); `set` validates and saves, `set <key> default`
+                                     resets; `--json` is what the popup reads. home_dir: a folder to start
+                                     NEW agents in when you are in your home folder (default
+                                     ~/.local/share/tether/home; --unset turns it off). (Claude asks "trust
+                                     this folder?" for home on every start, but remembers other folders)
 
   Backups (conversations live in each agent's own folder; Claude deletes old ones)
     tether backup [space] [--quiet]  copy the transcripts of every linked session into the backup
@@ -102,6 +132,14 @@ Environment
   TETHER_HOME_DIR    overrides "home_dir" in config.json (see `tether config`)
   TETHER_SEARCH_MODEL  model for the AI steps of `tether search` (default: "search_model" in
                      config.json, else sonnet)
+  TETHER_CONTEXT_DIR where the context store lives (default: "context_dir" in config.json, else
+                     ~/.local/share/tether/context)
+  TETHER_CONTEXT_AUTO 1/0: background learning on or off (default: "context_auto" in config.json, off)
+  TETHER_CONTEXT_AUTO_ACCEPT  1 lets background learning save plain facts about existing topics without review (undo: tether context undo)
+  TETHER_CONTEXT_AGENT agent for background learning: claude or copilot (default: "context_agent" in config.json, else claude)
+  TETHER_CONTEXT_MODEL model for background learning (default: "context_model" in config.json, else haiku)
+  TETHER_DEFAULT_AGENT claude|copilot: the agent the + button starts a new space with (default: "default_agent"
+                     in config.json, else claude)
   TETHER_NO_ADOPT=1  never link agents started without tether (see `tether adopt`)
   TETHER_NO_CD=1     do not change to the folder the session was started in
   TETHER_FORCE=1     start even if this session looks to be running already

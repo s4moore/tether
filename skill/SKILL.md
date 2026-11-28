@@ -121,6 +121,25 @@ Conversations (they live in each agent's own folder; tether only stores links)
   tether restore [space | --id X]  copy missing transcripts back from the backup (`tether claude` does
                                    this by itself when a linked transcript has gone).
                                    --session <id> [--agent a] restores one session by its id
+  tether continue [claude|copilot] [--tab <tab-id>]   (older name: `tether swap`)
+                                   continue this terminal's conversation with the other agent (default: the
+                                   other one) in a NEW tab: writes a new session in its store from the
+                                   transcript (text; tool calls and results as short notes), links it to the
+                                   new tab and starts it there. The original tab and session are untouched
+                                   and may keep running, so it can be run from inside the agent
+                                   (`! tether continue`). `--tab` is what the tab menu's Continue in Copilot / Claude uses.
+  tether config [--json | get <key> | set <key> <value|default>]
+                                   every setting with its value and source (default, config.json, or an environment
+                                   variable, which wins); the gear in the spaces header edits the same ones. `set`
+                                   validates. `$TETHER_DEFAULT_AGENT` (claude|copilot) is what the + button starts.
+  tether context add|find|list|check|learn|proposals|accept|reject|harvest
+                                   a small knowledge base of facts about the user's environment (where repos
+                                   live, the stack, commands that worked). `tether context find <words>` is a free
+                                   local search: use it before searching the machine. The `tether-context` skill
+                                   explains how agents use it. Plain text: never store secrets. `$TETHER_CONTEXT_DIR`
+                                   moves the store. `learn` and the opt-in background learning (`context_auto`,
+                                   `$TETHER_CONTEXT_AUTO`, agent `$TETHER_CONTEXT_AGENT`, `$TETHER_CONTEXT_AUTO_ACCEPT` (saves plain facts about existing topics without review; `tether context recent` lists them, `undo` removes),  model `$TETHER_CONTEXT_MODEL`) only PROPOSE facts; the
+                                   user accepts them. Never accept for them.
   tether read <space> [--last N] [--commands] [--full] [--id X | --session S] [--json]
                                    what a space's conversation said (user and assistant text, last N messages,
                                    default 12), for bringing in context from another thread. Never tool output.
@@ -229,6 +248,6 @@ print the manuals. Mods go in `mods/` and are checked with `herdr-app check <mod
 herdr mods that use tether (in `~/.config/herdr-app/mods/`, layout `tether`): `tether-spaces` (sidebar; clock
 button opens `tether-history`, archive button opens `tether-backups`, right-click opens `tether-menu`),
 `tether-new-space`, `tether-history` (closed spaces only, click to reopen, the archive icon archives it (`tether delete`); archived spaces are in Backups), `tether-menu` (a copy of the stock `menu`: Close does not
-ask; adds Fork, Back up now, Export… and Archive, which has no dialog: it is `tether delete`, recoverable), `tether-search` (the magnifier: search conversations by what was said; Search words (free) or Search with AI, either one first; click a result to expand its matching text with the matches highlighted), `tether-backups` (the Backups popup and the Export dialog), `tether-tabs` and `tether-new-menu` (clones of the
+ask; adds Fork, Back up now, Export… and Archive, which has no dialog: it is `tether delete`, recoverable; and Delete…, which asks first, then runs `tether delete --sessions --close -y`: the space, its conversations and their backups, gone for good), `tether-settings` (the gear in the spaces header: tether's defaults as toggles and choices, from `tether config --json`, saved with `tether config set`), `tether-context-review` (the popup that lists facts proposed for the context store, each with Accept and Reject; opened from the space menu's Learn from this space and Review learned facts), `tether-search` (the magnifier: search conversations by what was said; Search words (free) or Search with AI, either one first; click a result to expand its matching text with the matches highlighted), `tether-backups` (the Backups popup and the Export dialog), `tether-tabs` and `tether-new-menu` (clones of the
 stock `tabs` and `new-menu`: the "+" at the top right starts Claude Code and Copilot through tether).
 Overlay roots need an explicit height; `size_full()` collapses to the header in a popup.

@@ -2,7 +2,8 @@
 // Changed for tether; see THIRD-PARTY.md at the top of this repository for the licence and attribution.
 // Context menus (a copy of Herdr's `menu`, for the spaces list): Close here does not ask, and a
 // space also gets Fork, Back up now and Export… (mod tether-backups) and Archive: it takes a backup and unlinks
-// the space's sessions (`tether delete`), no dialog; the Backups popup (archive button) brings it back.
+// the space's sessions (`tether delete`), no dialog; the Backups popup (archive button) brings it back. A space also gets Learn from this space and Review learned facts (`tether context`). A tab gets
+// Continue in Copilot / Claude (`tether continue --tab`): its conversation with the other agent, in a new tab.
 // Context menus (Herdr's items). Opened as a popup with
 // props { tab: "pane" | "tab" | "space" | "global", target }.
 // ↑/↓ move, Enter runs, Esc closes. An item is [label, command, args];
@@ -76,7 +77,7 @@ async function checkout(folder, on) {
   return common.stdout.trim() === `${top.stdout.trim()}/.git` ? "main" : "linked";
 }
 
-function items(p, git) {
+function items(p, git, tabAgent) {
   p = p ?? {};
   const tg = p.target ?? {};
   switch (p.tab) {
@@ -112,6 +113,7 @@ function items(p, git) {
     case "tab":
       return [
         ["Rename", "tab.rename", { id: tg.id }],
+        [tabAgent === "claude" ? "Continue in Copilot" : tabAgent === "copilot" ? "Continue in Claude" : "Continue in other agent", "tether.continue", { id: tg.id }],
         ["New tab", "tab.new", { space: tg.space }],
         ["Close", "tab.close", { id: tg.id }],
       ];
@@ -123,8 +125,12 @@ function items(p, git) {
         ["Fork", "tether.fork", { id: tg.id, name: spaces().find((s) => s.id === tg.id)?.name ?? "" }],
         ["Back up now", "tether.backup", { id: tg.id, name: spaces().find((s) => s.id === tg.id)?.name ?? "" }],
         ["Export…", "tether.export", { id: tg.id, name: spaces().find((s) => s.id === tg.id)?.name ?? "" }],
+        ["Learn from this space", "tether.learn", { id: tg.id, name: spaces().find((s) => s.id === tg.id)?.name ?? "" }],
+        ["Review learned facts", "tether.review", {}],
+        ["Browse context", "tether.context", {}],
         ["Close", "space.close", { id: tg.id, confirmed: true }],
         ["Archive", "space.delete", { id: tg.id, name: spaces().find((s) => s.id === tg.id)?.name ?? "" }],
+        ["Delete…", "tether.delete", { id: tg.id, name: spaces().find((s) => s.id === tg.id)?.name ?? "" }],
       ];
     default:
       return [
@@ -140,11 +146,42 @@ function items(p, git) {
 
 function menuIcon(command) {
   if (command === "space.delete") return "mods/workspace-chrome/archive.svg";
+  if (command === "tether.delete") return "mods/tether-backups/trash.svg";
   if (command === "tether.fork") return "mods/workspace-chrome/git-branch.svg";
+  if (command === "tether.learn") return "mods/workspace-chrome/file-text.svg";
+  if (command === "tether.review") return "mods/workspace-chrome/circle-check.svg";
+  if (command === "tether.context") return "mods/workspace-chrome/folder.svg";
+  if (command === "tether.continue") return "mods/workspace-chrome/git-compare.svg";
   if (command === "tether.backup") return "mods/workspace-chrome/files.svg";
   if (command === "tether.export") return "mods/workspace-chrome/folder.svg";
   const name = command.endsWith(".close") ? "x" : command.endsWith(".rename") ? "square-pen" : command.endsWith(".new") ? "plus" : command === "worktree" ? "git-branch" : command === "app.help" ? "terminal" : command === "app.theme" ? "settings" : command === "pane.split" ? "panel-right" : command === "pane.zoom" ? "square" : "terminal";
   return `mods/workspace-chrome/${name}.svg`;
+}
+
+// Continue in the other agent (tab menu): the tab's conversation carried over to Copilot or Claude in a NEW tab; the
+// original tab is untouched. tether does the work (`tether continue --tab`); the result is a toast.
+async function continueInOtherAgent(a) {
+  try {
+    const r = await exec(`${home()}/.local/bin/tether`, ["continue", "--tab", a.id], { timeout: 60000 });
+    if (r.code !== 0) {
+      notify({ title: "Could not continue in the other agent", body: (r.stderr || r.stdout).trim().replace(/^tether: /, "").slice(0, 300), level: "warning" });
+      return;
+    }
+    notify({ title: "Continuing in a new tab", body: (r.stdout.trim().split("\n").pop() ?? "").slice(0, 200), level: "success" });
+  } catch (e) {
+    notify({ title: "Could not continue in the other agent", body: String(e?.message ?? e).slice(0, 300), level: "error" });
+  }
+}
+
+// Learn from this space: read its conversation once (one model call, your own Claude) and propose facts for the context
+// store (`tether context`); the review popup opens at once, shows the progress, then the facts. Nothing is saved until you accept them.
+function reviewFacts(learn) {
+  openOverlay({ mod: "tether-context-review", kind: "popup", width: 560, height: 520, props: learn ? { learn } : {} });
+}
+
+// The popup itself shows the progress (usually 15 to 60 seconds) and then the facts, so nothing depends on a toast.
+function learnFromSpace(a) {
+  reviewFacts({ id: a.id, name: a.name });
 }
 
 // The key bound to a command, for the hint on the right.
@@ -159,6 +196,7 @@ export default class Menu extends View {
   init(_props, cx) {
     this.at = 0;
     this.git = null;
+    this.tabAgent = null; // the agent linked to the tab (tab menu): names the "Continue in ..." item
     this.handle = cx.focus_handle();
     this.handle.focus();
     const p = props();
@@ -169,23 +207,37 @@ export default class Menu extends View {
         this.git = await checkout(folder, space.machine).catch(() => null);
         cx.notify();
       });
+    if (p?.tab === "tab" && p.target?.id)
+      cx.spawn(async (cx) => {
+        try {
+          const r = await exec(`${home()}/.local/bin/tether`, ["list", "--json"], { timeout: 10000 });
+          const rows = r.code === 0 ? JSON.parse(r.stdout) : [];
+          this.tabAgent = rows.flatMap((row) => row.links).find((l) => l.tab === p.target.id)?.agent ?? null;
+        } catch {}
+        cx.notify();
+      });
   }
 
   choose(i, cx) {
-    const it = items(props(), this.git)[i];
+    const it = items(props(), this.git, this.tabAgent)[i];
     if (!it) return;
     closeOverlay(props()?.overlay);
     if (it[1] === "tether.fork") forkSpace(it[2]);
+    else if (it[1] === "tether.learn") learnFromSpace(it[2]);
+    else if (it[1] === "tether.review") reviewFacts();
+    else if (it[1] === "tether.context") openOverlay({ mod: "tether-context", kind: "popup", width: 560, height: 620 });
+    else if (it[1] === "tether.continue") continueInOtherAgent(it[2]);
     else if (it[1] === "tether.backup") backupSpace(it[2]);
     else if (it[1] === "tether.export") openOverlay({ mod: "tether-backups", kind: "dialog", width: 460, height: 270, props: { mode: "export", id: it[2].id, name: it[2].name } });
     else if (it[1] === "space.delete") archiveSpace(it[2]);
+    else if (it[1] === "tether.delete") openOverlay({ mod: "tether-backups", kind: "dialog", width: 460, height: 270, props: { mode: "delete", id: it[2].id, name: it[2].name } });
     else if (it[1] === "worktree") openOverlay({ mod: "worktree", kind: "dialog", ...(it[2].action === "open" ? { width: 560, height: 480 } : { width: 440, height: 260 }), props: it[2] });
     else run(it[1], it[2]);
   }
 
   render(cx) {
     const t = theme();
-    const list = items(props(), this.git);
+    const list = items(props(), this.git, this.tabAgent);
     return v_flex()
       .id("menu")
       .track_focus(this.handle)
@@ -205,7 +257,7 @@ export default class Menu extends View {
       .children(
         list.map((it, i) =>
           v_flex()
-            .when(i > 0 && (it[1].endsWith(".close") || it[1] === "app.help" || (it[1] === "app.theme" && list[i - 1][1] !== "app.theme")), el => el.child(div().mx(7).my(4).h(1).bg(t.border)))
+            .when(i > 0 && (it[1].endsWith(".close") || it[1] === "tether.fork" || it[1] === "tether.learn" || it[1] === "tether.delete" || it[1] === "app.help" || (it[1] === "app.theme" && list[i - 1][1] !== "app.theme")), el => el.child(div().mx(7).my(4).h(1).bg(t.border)))
             .child(h_flex()
             .id(`mi-${i}`)
             .h(31)

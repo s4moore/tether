@@ -1,5 +1,5 @@
 // New tether space: asks for a name (required, unique), then makes the space and
-// starts a persistent, tether-linked Claude session in it. Enter creates, Esc cancels.
+// starts a persistent, tether-linked agent session in it (Claude, or Copilot if that is the default_agent setting). Enter creates, Esc cancels.
 // Opened by tether-spaces' "+" with props { }. Shift-click on "+" skips all this.
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
@@ -11,6 +11,7 @@ export default class SpaceNew extends View {
   init(_props, cx) {
     this.text = "";
     this.closed = []; // names of closed spaces tether still knows
+    this.agent = "claude"; // the default_agent setting, read below
     this.input = InputState.new({ value: "" });
     this.input.on("change", (_e, cx) => { this.text = this.input.value(); cx.notify(); });
     this.input.on("submit", () => this.submit());
@@ -27,6 +28,13 @@ export default class SpaceNew extends View {
         this.closed = JSON.parse(r.stdout).filter((s) => s.closed).map((s) => s.name);
         cx.notify();
       } catch (_e) { /* live names are still checked */ }
+    });
+    cx.spawn(async (cx) => {
+      try {
+        const r = await exec(`${home()}/.local/bin/tether`, ["config", "get", "default_agent"]);
+        const a = r.stdout.trim();
+        if (a === "claude" || a === "copilot") this.agent = a;
+      } catch (_e) { /* Claude, as before */ }
     });
   }
 
@@ -47,7 +55,7 @@ export default class SpaceNew extends View {
     if (!this.valid()) return;
     const p = props() ?? {};
     closeOverlay(p.overlay);
-    run("space.new", { name: this.text.trim(), argv: [`${home()}/.local/bin/tether`, "claude"] });
+    run("space.new", { name: this.text.trim(), argv: [`${home()}/.local/bin/tether`, this.agent] });
   }
 
   key(e, cx) {
@@ -75,7 +83,7 @@ export default class SpaceNew extends View {
         .bg(t.background).text_size(12.8).text_color(t.foreground))
       .child(div().pt(6).text_size(11.5).text_color(problem ? t.blocked : t.dim)
         .child(problem || "Use something specific to the task, so you can find it again later. You can rename it any time."))
-      .child(div().pt(8).text_size(11).text_color(t.dim).child("Starts a Claude session that tether keeps linked to this space."))
+      .child(div().pt(8).text_size(11).text_color(t.dim).child(`Starts a ${this.agent === "copilot" ? "Copilot" : "Claude"} session that tether keeps linked to this space.`))
       .child(h_flex().pt(20).gap(8).justify_end()
         .child(button("sn-cancel", "Cancel", false, true, () => closeOverlay(p.overlay)))
         .child(button("sn-create", "Create", true, ok, () => this.submit())));

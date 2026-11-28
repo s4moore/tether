@@ -150,6 +150,93 @@ only regular files, no absolute paths or `..`, only paths that belong to a sessi
 replaced. The space is stored under a synthetic id (`imported-<hex>`), so it appears as a closed space and
 `tether open <name>` rebuilds it; its name gets ` (imported)` appended if it clashes.
 
+## Continuing in the other agent
+
+`tether continue [claude|copilot]` (older name: `swap`) continues a terminal's conversation with the other agent **in a new tab**. The two agents
+cannot resume each other's sessions, so tether writes a **new session in the target agent's own store** from the old
+transcript, opens a tab with `tab.new` (as `open-session` does), links the tab's terminal to the new session and types
+`tether resume` into it. The original terminal, its link and its session are not touched, so the agent there may still be
+running: only a snapshot of its transcript is read.
+
+- **Reading** (`continue_turns`): the same transcript readers as `read` and search, extended to keep tool calls: user and
+  assistant text are kept, a tool call and its result become `[used <tool>: <what>]` / `[result: <text>]` notes (300
+  characters each) inside the assistant turn they belong to, consecutive same-role lines are merged so the roles alternate,
+  and the result starts with a user turn. Sub-agent side chains, meta lines, thinking blocks, images and attachments are
+  dropped.
+- **Trimming** (`continue_trim`): at most `CONTINUE_CAP` (150,000) characters, newest whole turns first. If older turns are left out
+  the conversation starts with a one-line user note saying how many, answered by "Understood.".
+- **Writing Claude** (`write_claude_session`): `<claude home>/projects/<cwd with non-alphanumerics as "-">/<uuid>.jsonl`,
+  one `user` or `assistant` line per turn chained by `uuid`/`parentUuid`, with `cwd`, `sessionId`, `version`, `timestamp`.
+  Claude accepts this minimal form; none of its bookkeeping lines (queue operations, usage, hooks) are needed.
+- **Writing Copilot** (`write_copilot_session`): `<copilot home>/session-state/<uuid>/` with `workspace.yaml`,
+  `events.jsonl` and the empty `checkpoints`, `files`, `research` folders. Events: `session.start`, `session.context_changed`,
+  then per turn `user.message` (`delivery: "idle"`), `assistant.turn_start`, `assistant.message` (empty `toolRequests`),
+  `assistant.turn_end`, chained by `parentId`. **Copilot validates strictly** and names the first bad line and field in its
+  error (for example `delivery` must be `idle`, a start time must be an integer, a `session.shutdown` needs about twenty
+  statistics fields), which is why no shutdown event is written; a converted session simply looks like one that was not
+  closed. Both formats are agent internals and can change: the unit tests pin what is written, and a real Claude and a real
+  Copilot were each resumed from a converted session and answered questions about it (including a command that had been run).
+- **The new tab** (`continue_cmd`): named `<tab name> · <agent>`, in the same space and folder; its terminal gets a link with
+  `continued_from: {agent, session, at}` pointing at the session it came from. If the tab cannot be opened the converted
+  session id is printed so it can be resumed by hand.
+- **From the tab menu:** `tether-tabs` opens `tether-menu` on a tab's right-click, whose tab menu has **Continue in Copilot** or **Continue in Claude**
+  (the mod reads `tether list --json` for the agent linked to the tab); it runs `tether continue --tab <tab id>`, which finds
+  the tab's one linked terminal (`terminal_in_tab`).
+- **Refusals:** no conversation yet, the same agent as the source, the target not on `PATH`, a tab with no linked terminal or
+  several.
+
+## Settings
+
+`SETTINGS` in `bin/tether` is the one list of what `config.json` can hold: key, group, label, help, type (`bool`, `choice`, `path`),
+choices, default, and the environment variable that overrides it. `config_rows` resolves each to its effective value with the
+same functions the rest of the tool uses (`context_auto_on`, `search_model`, `default_agent`, `home_dir_setting`, `backup_dir`,
+`context_dir`), and a **source**: `env` if the `TETHER_*` variable is set, `config` if the key is in `config.json`, else `default`.
+`config_set` validates by type (a bool is on/off, a choice must be one of its choices, a path must have an existing parent; `home_dir`
+must be an existing folder other than the home folder), stores it atomically (`save_config`, mode 0600) and says so if an
+environment variable overrides it. The popup (`tether-settings`) renders bools and choices as buttons, shows paths read-only, disables
+a setting whose source is `env`, and offers "Reset to the default" for one that is in `config.json`. `default_agent` is read by
+`tether-new-space` (the + dialog).
+
+## Context store
+
+`tether context` is a small tree of plain files, read by agents on demand, built so a lookup costs the same however much is
+stored. Default `~/.local/share/tether/context` (`$TETHER_CONTEXT_DIR`, or `context_dir` in `config.json`).
+
+- **Files.** `index.md`: a title, then one line per topic `- [topic](topic.md) — when to read it`. `<topic>.md`
+  (`[a-z0-9-]`, at most 41 characters): one fact per line, `- fact  _(2026-11-28, from: source)_`, with `[[topic]]` links to
+  related topics. Hand-written bullets without the date part are accepted. Anything else in a file is ignored.
+- **Lookup.** `find` greps every topic's facts (all words must match, case-insensitive) and the topic descriptions,
+  and prints at most 20 lines; no model call. `list` prints the index (or one topic). An agent that follows the
+  `tether-context` skill runs `find` first (`context_find` stems words, treats hyphens as spaces, ranks by how many words hit, and lists the topics when nothing does) and reads at most two or three topics. A lookup's cost is the index (limit 40 lines)
+  plus the files read (limit about 100 facts each), not the size of the store.
+- **Adding.** `add_fact` creates the topic and its index line (a new topic needs `--about`), refuses a line over 300
+  characters, an exact duplicate (case, spacing and trailing punctuation ignored) and anything matching `SECRETISH_RE`
+  (a password, key or token assignment, a long token-like string, a private-key header). `learn` asks `ask_claude` (no
+  tools) for a JSON array of `{topic, fact, about?, source?}` given the existing topic list, drops what fails those same
+  rules, and stores the rest in `.proposals.json`; `accept [--only]` applies, `reject` discards. Nothing is saved without accept.
+- **Check** (`context_check_issues`): `index-dead`, `orphan`, `link-dead`, `duplicate`, `empty`, `index-long`
+  (over `CONTEXT_INDEX_MAX` = 40 lines), `topic-long` (over `CONTEXT_TOPIC_MAX` = 100 facts) and `stale` (dated over
+  `CONTEXT_STALE_DAYS` = 365 days ago). `--fix` (`context_fix`) first copies the store to `.backup/<time>` (the newest 5 are
+  kept), then adds index lines for orphans, drops index lines whose file is gone, and removes exact duplicates inside a file.
+  It never edits a link, a fact or a description. The result is written to `.report.json`.
+- **In the background** (`context_check_if_due`, called from `launch` next to `auto_backup_if_due`): if the store has an index and
+  `.last-check` is older than a day, the stamp is touched and `tether context check --background --fix` starts detached
+  (`start_new_session`, no output). The child takes a non-blocking lock on `.check.lock`, so several tabs opened together run one
+  check. `context_hint` prints one line to stderr, at most once a day, if the last report had warnings. `tether doctor`
+  also reports the store. No model is ever called by the check.
+- **Proposal queue** (`.proposals.json`): `context_propose` is the one model call (`ask_claude`, no tools) that turns conversation text
+  into proposals; `learn` (a space's whole conversation, capped at `EXTRACT_CAP`) and the harvester
+  both queue with `context_queue_save`, merging by fact; `proposals --json` lists them numbered for the popup; `accept`/`reject
+  [--only N]` apply or discard and renumber.
+- **Background learning** (`context_harvest`, opt-in `context_auto`): started from `launch` by `context_harvest_if_due` at most every
+  `CONTEXT_HARVEST_EVERY` (6 h), detached, under a non-blocking `.harvest.lock`. It reads the open and closed conversations from
+  `search_corpus`, newest first. `.harvested.json` holds, per session, how many message lines were already read; the first run
+  only records these (history is never mined). A conversation is read when it has `CONTEXT_HARVEST_MIN_NEW` (6) new messages and its
+  transcript has not been written for `CONTEXT_HARVEST_IDLE` (30 min); only the new lines (the last `CONTEXT_HARVEST_CHARS`,
+  40,000) are sent, to `context_model()` (haiku). The call goes through `context_agent()`: `claude -p`, or `copilot -p -s --available-tools ""` (the prompt is an argument, Copilot reports no cost). With `context_auto_accept` on, `auto_acceptable()` lets a fact skip the queue only if its topic already exists and it has no command, link or shell characters (`RISKY_FACT_RE`); those are logged in `.auto-added.json` (last 50) for `recent` and `undo`. At most `CONTEXT_HARVEST_MAX` (3) conversations per run and
+  `CONTEXT_HARVEST_CAP_USD` ($0.50) a day (`.harvest-spend.json`). A failed call stops the run without marking anything read. It only
+  queues; it never calls `add_fact`.
+
 ## Reading another conversation
 
 `tether read <space>` prints the last N user and assistant messages of a space's conversation (default 12, each cut at
@@ -192,6 +279,15 @@ rank_candidates, rank_tokens, deep_sessions, deep_tokens, model, no_keyword_matc
 state, agent, session, src, tab, last_used, via_backup, score, snippets:[{role,text}], title, why?, quote?}]}`; paths
 and raw text are never in it. Model: `$TETHER_SEARCH_MODEL`, else `search_model` in `config.json`, else `sonnet`.
 
+## The look of the popups
+
+The popups (`tether-settings`, `tether-search`, `tether-backups`, `tether-history`, `tether-context`, `tether-context-review`) share one look, repeated as a
+few small helper functions at the top of each `main.js` because mods are standalone files: a title with a quiet subtitle and an `Esc`
+keycap; a **group** is one rounded card whose rows are separated by hairlines (not a box per row); an on/off setting is a **switch** and
+a choice is a **segmented control**; a scope filter is a row of **chips**; a **primary** (solid) button is used only for the one main
+action of a popup, every row action is a quiet outlined button; warnings are small badges rather than paragraphs of coloured text.
+The space and tab menus keep Herdr's own menu look (they are copies of its `menu`), with items grouped by purpose and divided by hairlines.
+
 ## Contract between the mods and the CLI
 
 | Mod | Calls | Reads |
@@ -199,8 +295,13 @@ and raw text are never in it. Model: `$TETHER_SEARCH_MODEL`, else `search_model`
 | `tether-spaces` | `tether touch <space-id>` on every space switch; `tether adopt --json` every 30 s | |
 | `tether-new-space` | `tether list --json`; launches `tether claude` as the new space's program | `closed`, `name` |
 | `tether-history` | `tether list --json`; `tether open --id <id> -y`; `tether delete --id <id> -y` (the trash icon) | `closed`, `last_used`, `name`, `forked_from`, `links[].agent/transcript/recoverable` |
-| `tether-menu` | `tether backup --id <id> --json` (Back up now); `tether fork --id <id> -y` (Fork); `tether delete --id <id> -y --close` (Delete; "nothing linked" falls back to a plain close) | `sessions`, `bytes` |
+| `tether-settings` | `tether config --json`; `tether config set <key> <value\|default>` | `key group label help type choices default value source env editable privacy` |
+| `tether-new-space` (default agent) | `tether config get default_agent` | one word |
+| `tether-context` | `tether context list --json` (topics, about, facts with `line`, `date`, `source`, `auto`); `tether context remove <topic> --line N` | `topic about facts[].line/fact/date/source/auto` |
+| `tether-context-review` | opened with `props.learn = {id, name}` it runs `tether context learn --id <id> --json` itself and shows the progress; then `tether context proposals --json`; `tether context accept\|reject [--only N]` | `n topic fact about source new_topic` |
+| `tether-menu` | (Learn from this space and Review learned facts) opens `tether-context-review`; `tether continue --tab <tab-id>` (tab menu: Continue in Copilot / Claude); `tether list --json` (which agent a tab has); `tether backup --id <id> --json` (Back up now); `tether fork --id <id> -y` (Fork); `tether delete --id <id> -y --close` (Archive; "nothing linked" falls back to a plain close) | `sessions`, `bytes` |
 | `tether-backups` (popup) | `backup --status --json`, `backup --list --json`, `backup --json`, `open-session <id> --agent <a>`, `backup --forget --session <id> --agent <a> [--everything] --json`, `import <file> --json` | status: `dir exists auto last_backup bytes linked backed_up missing recoverable`; rows: `space_id space tab agent session title in_agent in_backup linked bytes last_used` |
+| `tether-backups` (delete dialog, `props.mode = "delete"`, from the menu's Delete…) | `tether list --json` (what is linked; `tab_open` says whether a link's tab still exists); `tether delete --id <id> --sessions --close -y` (the space, its conversations and their backup copies; nothing is kept) | exit 3 and a message if a session is still running |
 | `tether-backups` (export dialog) | `tether list --json`; `tether export --id <id> -o <folder> --json` | `path name sessions files missing` |
 | `tether-search` | `tether search <text> --scope <list> --json [--rank]`; `--deep --sessions <ids>`; `tether open-session <id> --agent <a>` (Open), then `space.select` for a result in an open space | `tier estimate results[] corpus model cost_usd fallback` |
 | `tether-tabs`, `tether-new-menu` | none: the "+" starts Claude Code / Copilot with argv `[tether, claude\|copilot]` | |
@@ -238,3 +339,54 @@ only while the shipped pieces they point at still exist.
 - **Assets:** `mods/workspace-chrome/{archive,branch,clock,plus,search,spinner}.svg`, `mods/pane/close.svg`, `icons/shell.svg`.
 
 `herdr-app check <mod>` validates a mod; `./sync.sh upstream` diffs each clone against the shipped original after a Herdr upgrade.
+
+## What is in this repository
+
+| Path | Installs to | What it is |
+|---|---|---|
+| `bin/tether` | `~/.local/bin/tether` | The tool. Python 3, stdlib only. Manual: `docs/tether-help.txt` |
+| `skill/SKILL.md` | `~/.claude/skills/tether/` | Claude Code skill, so an agent can run `tether link/status/...` |
+| `skill-context/SKILL.md` | `~/.claude/skills/tether-context/` | Skill that tells agents how to look up and remember facts with `tether context` |
+| `herdr/mods/tether-spaces` | `~/.config/herdr-app/mods/` | Clone of Herdr's `spaces` mod: the sidebar list, a "+" that starts a tether Claude space, a history button, a backups button, and `touch` on every space switch |
+| `herdr/mods/tether-new-space` | same | Name dialog for a new space; runs `tether claude` in it |
+| `herdr/mods/tether-history` | same | Closed spaces tether still has sessions for; click to reopen |
+| `herdr/mods/tether-menu` | same | Clone of `menu`: space context menu; Close does not ask; adds Fork, Back up now, Export…, **Archive** and **Delete…** (a tab's menu gets **Continue in Copilot** / **Continue in Claude**) (no dialog: it takes a backup and unlinks the space, the same as `tether delete`, so the archive button can bring it back) |
+| `herdr/mods/tether-tabs`, `tether-new-menu` | same | Clones of Herdr's `tabs` and `new-menu`: the "+" at the top right starts Claude Code and Copilot **through tether**, so the tab is linked to its session from the first moment. Other agents start as before |
+| `herdr/mods/tether-settings` | same | New: the Settings popup (the gear in the spaces header): toggles and choices for the defaults in `config.json`, each showing whether an environment variable overrides it |
+| `herdr/mods/tether-context` | same | New: the Context popup (space menu *Browse context*, or Settings): search every saved fact, read them by topic, delete one (asks twice) |
+| `herdr/mods/tether-context-review` | same | New: the popup that lists facts proposed for the context store (see [Context](context.md)), each with Accept and Reject, opened from the space menu |
+| `herdr/mods/tether-search` | same | New: the Search popup (magnifier in the spaces header): a text box, checkboxes for open / closed / archived (deleted) spaces, *Search words* and *Search with AI* (either one straight away), an *Open* button per result, and a click anywhere else on a result expands it to all its matching text (up to three snippets) with the matched words highlighted |
+| `herdr/mods/tether-backups` | same | New: the Backups popup (status, Back up all, Restore, Import) and the per-space Export dialog |
+| `herdr/layouts/tether.json` | `.../layouts/` | Clone of the `main` layout that uses `tether-spaces` |
+| `install.sh`, `get.sh` | | The installer (also `--uninstall`), and the bootstrap behind the one-line install |
+| `sync.sh`, `release.sh` | | For maintainers: keep this repo and a machine in step; build a release |
+| `docs/` | | `install.md`, `using.md`, `context.md`, `configuration.md`, `troubleshooting.md` (for users), `how-it-works.md` (design and contracts), `review.md` (design notes and known limitations) |
+| `LICENSE`, `THIRD-PARTY.md` | | MIT for tether; the copied Herdr mods keep Apache-2.0 |
+| `tests/`, `test.sh` | | Unit tests (no Herdr or Claude needed), the installer tests, and `test_docs.py`: it fails when a command, an environment variable or a mod is missing from the docs (README and `docs/`), the agent skill or the generated help |
+
+## Not in this repository, on purpose
+
+- `~/.local/state/tether/spaces.json` (the links): it holds space and session ids that only mean
+  something on one machine. A new machine starts with none: bring a space across with `tether export` /
+  `tether import`.
+- Your conversation backups: they live in `~/.local/share/tether/backups`, outside any clone.
+- `shared.json` except the layout choice: its other keys are space ids and colours, or a cache of
+  detected agents that Herdr rebuilds.
+- `gpui-kit.d.ts` and `jsconfig.json` in each mod: editor type aids that `herdr-app check` regenerates.
+
+## Things to know about Herdr and tether
+
+- **The `cloned_from` version in a mod is a label, not a pin.** Herdr records the version a clone started
+  from, and says clones "are yours and never updated". Nothing here breaks on a Herdr upgrade by itself, but
+  the clones will not pick up upstream fixes either. `./sync.sh upstream` is the way to notice.
+- **Names:** the layout is `tether` and every custom mod is `tether-…`, so they are recognisable and cannot
+  collide with a mod Herdr ships later.
+- **The mods rely on assets and mods Herdr ships:** `mods/workspace-chrome/{plus,clock,branch}.svg`,
+  `icons/shell.svg`, and the `workspace-chrome`, `agents`, `tabs`, `pane`, `worktree` mods that `tether`
+  and `new-menu` reference. A Herdr upgrade that renames those would break the mods; `herdr-app check` and
+  `./sync.sh upstream` will show it.
+- Herdr does not re-run commands after a reboot: terminals come back as plain shells. Run `tether` in each,
+  or `tether open <space>` once to restore the whole space.
+- Claude deletes old transcripts after its retention period (30 days by default). With a backup,
+  `tether claude` restores a deleted transcript; without one, a link whose transcript is gone starts a fresh
+  session, with a warning.
