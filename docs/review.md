@@ -9,7 +9,7 @@ Why tether is built the way it is, what has been checked, and where it can let y
   can be rebuilt tab by tab.
 - **The agents' own folders stay the source of truth.** tether stores only links (`spaces.json`); conversations are resumed
   from where Claude and Copilot keep them. Backups are copies, never moves.
-- **The mods only call the CLI.** All logic is in one stdlib-only Python file, so everything the UI does can be run and
+- **The mods only call the CLI.** All logic is in one stdlib-only Python package, so everything the UI does can be run and
   tested from a terminal, and a mod can be replaced without touching behaviour.
 - **Guards before anything destructive.** A delete only touches paths built from a validated session uuid; a session that is
   running (matched by pid and process start time) is never started a second time or deleted; the link file is written under

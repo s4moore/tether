@@ -21,7 +21,8 @@ def user_docs():
     return "\n".join(read(*p.split("/")) for p in pages)
 
 
-SCRIPT = read("bin", "tether")
+LIB = os.path.join(ROOT, "lib", "tetherlib")
+SCRIPT = "\n".join(read("lib", "tetherlib", f) for f in sorted(os.listdir(LIB)) if f.endswith(".py"))  # the whole tool, whichever module holds it
 # commands main() dispatches by name (the agent names, claude / copilot, are covered by their own docs)
 COMMANDS = sorted(set(re.findall(r'(?:elif|if) cmd == "([a-z-]+)"', SCRIPT)))
 ENV_VARS = sorted(set("TETHER_" + n for n in re.findall(r'\benv\("([A-Z_]+)"\)', SCRIPT)))
@@ -44,12 +45,12 @@ class DocsStayInSync(unittest.TestCase):
 
     def test_the_version_is_documented_by_one_number(self):
         version = read("VERSION").strip()
-        self.assertIn(f'__version__ = "{version}"', SCRIPT)
+        self.assertIn(f'__version__ = "{version}"', read("lib", "tetherlib", "core.py"))
         self.assertIn(version, read("README.md"), "README should show the pinned-version example with the current version")
 
     def test_no_machine_specific_paths_ship(self):
         banned = re.compile(r"/Users/(?!me/)[a-z]+/")
-        for rel in ("README.md", "CONTRIBUTING.md", "skill/SKILL.md", "bin/tether", "install.sh",
+        for rel in ("README.md", "CONTRIBUTING.md", "skill/SKILL.md", "bin/tether", "install.sh", *("lib/tetherlib/" + f for f in sorted(os.listdir(LIB)) if f.endswith(".py")),
                     *("docs/" + f for f in sorted(os.listdir(os.path.join(ROOT, "docs"))) if f.endswith(".md"))):
             hit = banned.search(read(*rel.split("/")))
             self.assertIsNone(hit, f"{rel} contains {hit.group(0) if hit else ''!r}")

@@ -10,6 +10,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HERDR_DIR="${HERDR_DIR:-$HOME/.config/herdr-app}"
 BIN_DIR="${BIN_DIR:-$HOME/.local/bin}"
+LIB_DIR="${LIB_DIR:-$HOME/.local/lib}"
 SKILL_ROOT="${SKILL_ROOT:-$HOME/.claude/skills}"
 
 meta() {
@@ -23,6 +24,7 @@ pull() {
     exit 1
   fi
   cp "$BIN_DIR/tether" "$HERE/bin/tether"
+  for f in "$LIB_DIR"/tetherlib/*.py; do cp "$f" "$HERE/lib/tetherlib/"; done
   cp "$SKILL_ROOT/tether/SKILL.md" "$HERE/skill/SKILL.md"
   cp "$HERDR_DIR/layouts/tether.json" "$HERE/herdr/layouts/tether.json"
   for src in "$HERE"/herdr/mods/*/; do

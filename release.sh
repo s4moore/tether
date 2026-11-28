@@ -6,7 +6,7 @@
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
 V="$(cat VERSION)"
-grep -q "^__version__ = \"$V\"" bin/tether || { echo "VERSION ($V) and bin/tether __version__ disagree" >&2; exit 1; }
+grep -q "^__version__ = \"$V\"" lib/tetherlib/core.py || { echo "VERSION ($V) and lib/tetherlib/core.py __version__ disagree" >&2; exit 1; }
 [ -z "$(git status --porcelain --untracked-files=no)" ] || { echo "the working tree has uncommitted changes: commit first" >&2; exit 1; }
 mkdir -p dist
 git archive --format=tar.gz --prefix="tether-$V/" -o "dist/tether-$V.tar.gz" HEAD

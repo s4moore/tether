@@ -75,6 +75,25 @@ class Installer(Sandbox):
         self.assertFalse(os.path.exists(os.path.join(ROOT, "backups")))
         self.assertFalse(os.path.exists(os.path.join(self.home, ".claude", "settings.json")), "retention is only changed when asked")
 
+    def test_the_installed_tool_runs_from_the_installed_package(self):
+        self.assertEqual(self.run_install().returncode, 0)
+        lib = os.path.join(self.home, ".local", "lib", "tetherlib")
+        self.assertTrue(os.path.isfile(os.path.join(lib, "cli.py")))
+        self.assertEqual(sorted(f for f in os.listdir(lib) if f.endswith(".py")),
+                         sorted(f for f in os.listdir(os.path.join(ROOT, "lib", "tetherlib")) if f.endswith(".py")))
+        # run it from where it was installed, with nothing of the repo on the path
+        r = subprocess.run([os.path.join(self.bin, "tether"), "--version"], capture_output=True, text=True, cwd=self.home, env=self.env())
+        with open(os.path.join(ROOT, "VERSION")) as f:
+            self.assertEqual(r.stdout.strip(), "tether " + f.read().strip(), r.stderr)
+
+    def test_an_upgrade_replaces_the_package_whole_and_drops_modules_that_no_longer_exist(self):
+        self.assertEqual(self.run_install().returncode, 0)
+        stale = os.path.join(self.home, ".local", "lib", "tetherlib", "old_module.py")
+        with open(stale, "w") as f:
+            f.write("x = 1\n")
+        self.assertEqual(self.run_install().returncode, 0)
+        self.assertFalse(os.path.exists(stale))
+
     def test_rerun_is_safe_and_does_not_copy_identical_files_again(self):
         self.assertEqual(self.run_install().returncode, 0)
         r = self.run_install()
@@ -82,7 +101,7 @@ class Installer(Sandbox):
         saved = os.path.join(self.home, ".tether-backups")
         for dirpath, _, files in os.walk(saved):
             for name in files:
-                self.assertNotIn(name, ("tether", "SKILL.md", "tether.json"), "identical files must not be backed up again")
+                self.assertNotIn(name, ("tether", "tetherlib", "SKILL.md", "tether.json"), "identical files must not be backed up again")
 
     def test_works_when_the_script_comes_from_a_pipe(self):
         with open(os.path.join(ROOT, "install.sh")) as f:
@@ -125,6 +144,7 @@ class Installer(Sandbox):
         r = self.run_install("--uninstall")
         self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
         self.assertFalse(os.path.exists(os.path.join(self.bin, "tether")))
+        self.assertFalse(os.path.exists(os.path.join(self.home, ".local", "lib", "tetherlib")), "the package goes with the entry point")
         self.assertFalse(os.path.exists(os.path.join(self.home, ".claude", "skills", "tether")))
         self.assertFalse(os.path.lexists(os.path.join(self.home, ".agents", "skills", "tether")))
         self.assertFalse(os.path.exists(os.path.join(self.home, ".claude", "skills", "tether-context")))
@@ -161,7 +181,8 @@ class Bootstrap(Sandbox):
         self.assertIn("checking the checksum", r.stdout)
         self.assertTrue(os.access(os.path.join(self.bin, "tether"), os.X_OK))
         out = subprocess.run([os.path.join(self.bin, "tether"), "--version"], capture_output=True, text=True).stdout
-        self.assertEqual(out.strip(), "tether " + open(os.path.join(ROOT, "VERSION")).read().strip())
+        with open(os.path.join(ROOT, "VERSION")) as f:
+            self.assertEqual(out.strip(), "tether " + f.read().strip())
 
     def test_get_sh_installs_nothing_when_the_checksum_is_wrong(self):
         r = self.run_get(self.release(tamper=True))

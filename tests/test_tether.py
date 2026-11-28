@@ -1,24 +1,26 @@
-"""Tests for bin/tether. Run: python3 -m unittest discover -s tests -v
+"""Tests for the tetherlib package behind bin/tether. Run: python3 -m unittest discover -s tests -v
 
 Nothing here touches the real herdr app, ~/.claude, or ~/.local/state: every test uses a temporary
 state directory and mocks the herdr/hc calls and the agent session lookups.
 """
 import contextlib
-import importlib.machinery
-import importlib.util
 import io
 import json
 import os
 import shutil
+import sys
 import tempfile
+import tarfile
+import subprocess
+import time
 import unittest
+from datetime import datetime
 from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-_loader = importlib.machinery.SourceFileLoader("tether", os.path.join(HERE, "..", "bin", "tether"))
-_spec = importlib.util.spec_from_loader("tether", _loader)
-tether = importlib.util.module_from_spec(_spec)
-_loader.exec_module(tether)
+sys.path.insert(0, os.path.join(HERE, "..", "lib"))
+
+from tetherlib import ai, backups, cli, context, continue_, core, doctor, herdr, launch, reading, search, settings, store, workspace  # noqa: E402
 
 SESSION = "11111111-2222-3333-4444-555555555555"
 SESSION2 = "66666666-7777-8888-9999-000000000000"
@@ -63,61 +65,61 @@ class TetherTestCase(unittest.TestCase):
 
 class SmallHelpers(TetherTestCase):
     def test_ago(self):
-        self.assertEqual(tether.ago("not a date"), "unknown")
-        self.assertEqual(tether.ago(tether.now()), "just now")
+        self.assertEqual(core.ago("not a date"), "unknown")
+        self.assertEqual(core.ago(core.now()), "just now")
 
     def test_env_reads_tether_names(self):
         with mock.patch.dict(os.environ, {"TETHER_NO_CD": "1"}):
-            self.assertEqual(tether.env("NO_CD"), "1")
+            self.assertEqual(core.env("NO_CD"), "1")
         with mock.patch.dict(os.environ, {}, clear=True):
-            self.assertIsNone(tether.env("NO_CD"))
+            self.assertIsNone(core.env("NO_CD"))
 
     def test_agent_command_is_the_agent_not_a_shell_mentioning_it(self):
-        self.assertTrue(tether._is_agent_command("claude --resume abc --name x", "claude"))
-        self.assertTrue(tether._is_agent_command("/Users/me/.local/bin/claude", "claude"))
-        self.assertTrue(tether._is_agent_command("node /opt/x/copilot.js --resume y", "copilot"))
-        self.assertFalse(tether._is_agent_command("/bin/zsh -c tether link claude abc", "claude"))
-        self.assertFalse(tether._is_agent_command("", "claude"))
+        self.assertTrue(store._is_agent_command("claude --resume abc --name x", "claude"))
+        self.assertTrue(store._is_agent_command("/Users/me/.local/bin/claude", "claude"))
+        self.assertTrue(store._is_agent_command("node /opt/x/copilot.js --resume y", "copilot"))
+        self.assertFalse(store._is_agent_command("/bin/zsh -c tether link claude abc", "claude"))
+        self.assertFalse(store._is_agent_command("", "claude"))
 
     def test_session_paths_only_for_real_uuids(self):
-        self.assertEqual(tether.session_paths("claude", "../../etc"), [])
-        self.assertEqual(tether.session_paths("claude", "*"), [])
-        self.assertEqual(tether.session_paths("copilot", ""), [])
+        self.assertEqual(store.session_paths("claude", "../../etc"), [])
+        self.assertEqual(store.session_paths("claude", "*"), [])
+        self.assertEqual(store.session_paths("copilot", ""), [])
 
     def test_match_space_exact_beats_substring(self):
         rows = [("a", "work", "", False), ("b", "work extra", "", False)]
-        self.assertEqual(tether.match_space("work", rows), "a")
-        self.assertEqual(tether.match_space("extra", rows), "b")
-        self.assertIsNone(tether.match_space("nothing", rows))
+        self.assertEqual(workspace.match_space("work", rows), "a")
+        self.assertEqual(workspace.match_space("extra", rows), "b")
+        self.assertIsNone(workspace.match_space("nothing", rows))
 
 
 class State(TetherTestCase):
     def test_corrupt_state_is_kept_aside_and_replaced(self):
         with open(os.path.join(self.dir, "spaces.json"), "w") as f:
             f.write("{not json")
-        with contextlib.redirect_stderr(io.StringIO()), tether.State() as st:
+        with contextlib.redirect_stderr(io.StringIO()), store.State() as st:
             self.assertEqual(st.data, {})
         self.assertTrue(any(n.startswith("spaces.json.corrupt-") for n in os.listdir(self.dir)))
 
     def test_state_dir_default_and_override(self):
         with mock.patch.dict(os.environ, {"TETHER_STATE_DIR": "/somewhere/else"}):
-            self.assertEqual(tether.state_dir(), "/somewhere/else")
+            self.assertEqual(core.state_dir(), "/somewhere/else")
         env = {k: v for k, v in os.environ.items() if k != "TETHER_STATE_DIR"}
         env["HOME"] = "/home/someone"
         with mock.patch.dict(os.environ, env, clear=True):
-            self.assertEqual(tether.state_dir(), "/home/someone/.local/state/tether")
+            self.assertEqual(core.state_dir(), "/home/someone/.local/state/tether")
 
 class FindingTerminals(TetherTestCase):
     def test_exact_then_machine_prefixed(self):
         spaces = [space("t1", "box/t5")]
-        self.assertEqual(tether.find_terminal(spaces, "t1")[2]["terminal"], "t1")
-        self.assertEqual(tether.find_terminal(spaces, "t5")[2]["terminal"], "box/t5")
-        self.assertIsNone(tether.find_terminal(spaces, "t9"))
+        self.assertEqual(herdr.find_terminal(spaces, "t1")[2]["terminal"], "t1")
+        self.assertEqual(herdr.find_terminal(spaces, "t5")[2]["terminal"], "box/t5")
+        self.assertIsNone(herdr.find_terminal(spaces, "t9"))
 
     def test_same_address_in_two_spaces_is_refused(self):
         a, b = space("m1/t1"), dict(space("m2/t1"), id="spOTHER")
-        with self.assertRaises(tether.TetherError):
-            tether.find_terminal([a, b], "t1")
+        with self.assertRaises(core.TetherError):
+            herdr.find_terminal([a, b], "t1")
 
     def test_plan_space_says_why_a_terminal_is_skipped(self):
         sp = {"id": "spLIVE", "name": "work", "tabs": [
@@ -127,7 +129,7 @@ class FindingTerminals(TetherTestCase):
         ]}
         data = {"terminals": {"t1": link(tab="tab1"), "t2": link(SESSION2, tab="tab2"),
                               "t3": link(tab="tab3"), "t4": link(tab="tab4")}}
-        _, _, _, plan, skipped = tether.plan_space(data, sp)
+        _, _, _, plan, skipped = workspace.plan_space(data, sp)
         self.assertEqual([p[0] for p in plan], ["t1"])
         reasons = {addr: why for addr, _, _, why in skipped}
         self.assertIn("already running", reasons["t2"])
@@ -137,14 +139,14 @@ class FindingTerminals(TetherTestCase):
 
 class Launch(TetherTestCase):
     def run_dry(self, agent, args=(), where=None, exists=True):
-        where = where or tether.Where("spLIVE", "work", "t1", "tab1", "claude")
+        where = where or herdr.Where("spLIVE", "work", "t1", "tab1", "claude")
         out = io.StringIO()
         with mock.patch.dict(os.environ, {"TETHER_DRY_RUN": "1"}), \
-                mock.patch.object(tether, "resolve_where", return_value=(where, None)), \
-                mock.patch.object(tether, "find_tool", return_value="/bin/" + agent), \
-                mock.patch.object(tether, "session_exists", return_value=exists), \
+                mock.patch.object(herdr, "resolve_where", return_value=(where, None)), \
+                mock.patch.object(core, "find_tool", return_value="/bin/" + agent), \
+                mock.patch.object(store, "session_exists", return_value=exists), \
                 contextlib.redirect_stdout(out):
-            tether.launch(agent, list(args))
+            launch.launch(agent, list(args))
         return out.getvalue()
 
     def test_first_run_starts_a_new_named_session(self):
@@ -177,38 +179,38 @@ class Launch(TetherTestCase):
     def test_explicit_session_flag_steps_aside(self):
         err = io.StringIO()
         with mock.patch.dict(os.environ, {"TETHER_DRY_RUN": "1"}), \
-                mock.patch.object(tether, "find_tool", return_value="/bin/claude"), \
+                mock.patch.object(core, "find_tool", return_value="/bin/claude"), \
                 contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()) as out:
-            tether.launch("claude", ["--resume", "abc"])
+            launch.launch("claude", ["--resume", "abc"])
         self.assertIn("would run: claude --resume abc", out.getvalue())
 
     def test_running_session_is_not_started_twice(self):
         entry = link(pid=4242, pid_started="Mon 1 Jan")
         self.write_state({"spLIVE": {"name": "work", "terminals": {"t1": entry}}})
-        with mock.patch.object(tether, "_running", return_value=True), \
-                mock.patch.object(tether, "resolve_where",
-                                  return_value=(tether.Where("spLIVE", "work", "t1", "tab1", "claude"), None)), \
-                mock.patch.object(tether, "find_tool", return_value="/bin/claude"), \
-                mock.patch.object(tether, "session_exists", return_value=True):
+        with mock.patch.object(store, "_running", return_value=True), \
+                mock.patch.object(herdr, "resolve_where",
+                                  return_value=(herdr.Where("spLIVE", "work", "t1", "tab1", "claude"), None)), \
+                mock.patch.object(core, "find_tool", return_value="/bin/claude"), \
+                mock.patch.object(store, "session_exists", return_value=True):
             with self.assertRaises(SystemExit) as cm:
-                tether.launch("claude", [])
+                launch.launch("claude", [])
         self.assertIn("already running", str(cm.exception))
 
 
 class Linking(TetherTestCase):
-    where = tether.Where("spLIVE", "work", "t1", "tab1", "claude")
+    where = herdr.Where("spLIVE", "work", "t1", "tab1", "claude")
 
     def do_link(self, detected, session_arg=None):
-        patches = [mock.patch.object(tether, "resolve_where", return_value=(self.where, None)),
-                   mock.patch.object(tether, "session_exists", return_value=True),
-                   mock.patch.object(tether, "session_cwd", return_value="/tmp"),
-                   mock.patch.object(tether, "current_session", return_value=SESSION if detected else None),
-                   mock.patch.object(tether, "guess_session", return_value=SESSION),
-                   mock.patch.object(tether, "agent_process", return_value=(4242, "Mon 1 Jan"))]
+        patches = [mock.patch.object(herdr, "resolve_where", return_value=(self.where, None)),
+                   mock.patch.object(store, "session_exists", return_value=True),
+                   mock.patch.object(store, "session_cwd", return_value="/tmp"),
+                   mock.patch.object(store, "current_session", return_value=SESSION if detected else None),
+                   mock.patch.object(store, "guess_session", return_value=SESSION),
+                   mock.patch.object(store, "agent_process", return_value=(4242, "Mon 1 Jan"))]
         with contextlib.ExitStack() as stack, contextlib.redirect_stdout(io.StringIO()):
             for p in patches:
                 stack.enter_context(p)
-            tether.link("claude", session_arg)
+            launch.link("claude", session_arg)
         return self.read_state()["spLIVE"]["terminals"]["t1"]
 
     def test_linking_the_session_you_are_in_records_its_process(self):
@@ -235,19 +237,19 @@ class Reopening(TetherTestCase):
         def herdr_do(args):
             calls.append(args)
             if fail_on is not None and len(calls) == fail_on:
-                raise tether.TetherError("boom")
+                raise core.TetherError("boom")
             return {"space": "spNEW", "terminal": f"t{len(calls)}"}
 
         live = [{"id": "spNEW", "name": "work", "tabs": [
             {"id": "tabN", "name": "x", "terminals": [{"terminal": "t1"}, {"terminal": "t2"}]}]}]
         ok = mock.Mock(returncode=0, stdout="", stderr="")
-        with mock.patch.object(tether, "find_tool", return_value="/bin/hc"), \
-                mock.patch.object(tether, "herdr_do", side_effect=herdr_do), \
-                mock.patch.object(tether, "herdr_ls", return_value=live), \
-                mock.patch.object(tether, "session_exists", return_value=True), \
-                mock.patch.object(tether.subprocess, "run", return_value=ok), \
+        with mock.patch.object(core, "find_tool", return_value="/bin/hc"), \
+                mock.patch.object(herdr, "herdr_do", side_effect=herdr_do), \
+                mock.patch.object(herdr, "herdr_ls", return_value=live), \
+                mock.patch.object(store, "session_exists", return_value=True), \
+                mock.patch.object(subprocess, "run", return_value=ok), \
                 contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-            tether.reopen_closed("spOLD", self.read_state()["spOLD"], yes=True)
+            workspace.reopen_closed("spOLD", self.read_state()["spOLD"], yes=True)
         return self.read_state()
 
     def test_everything_recreated_moves_the_links_to_the_new_space(self):
@@ -267,15 +269,15 @@ class Reopening(TetherTestCase):
 class OpeningByName(TetherTestCase):
     def test_bare_name_finds_a_closed_space(self):
         self.write_state({"spOLD": {"name": "Previous work", "terminals": {"t9": link()}}})
-        with mock.patch.object(tether, "ensure_app"), mock.patch.object(tether, "herdr_ls", return_value=[]), \
-                mock.patch.object(tether, "open_space") as opened:
-            tether.open_by_name_or_fail("previous")
+        with mock.patch.object(herdr, "ensure_app"), mock.patch.object(herdr, "herdr_ls", return_value=[]), \
+                mock.patch.object(workspace, "open_space") as opened:
+            workspace.open_by_name_or_fail("previous")
         opened.assert_called_once_with(None, False, sid="spOLD")
 
     def test_unknown_name_fails_clearly(self):
-        with mock.patch.object(tether, "ensure_app"), mock.patch.object(tether, "herdr_ls", return_value=[]):
+        with mock.patch.object(herdr, "ensure_app"), mock.patch.object(herdr, "herdr_ls", return_value=[]):
             with self.assertRaises(SystemExit) as cm:
-                tether.open_by_name_or_fail("nothing")
+                workspace.open_by_name_or_fail("nothing")
         self.assertIn("unknown command or space", str(cm.exception))
 
 
@@ -283,24 +285,24 @@ class Deleting(TetherTestCase):
     def test_delete_with_sessions_keeps_a_running_session(self):
         self.write_state({"spOLD": {"name": "work", "terminals": {"t9": link(pid=1, pid_started="x")}}})
         removed = []
-        with mock.patch.object(tether, "herdr_ls", return_value=[]), \
-                mock.patch.object(tether, "_running", return_value=True), \
-                mock.patch.object(tether, "session_paths", return_value=["/fake/transcript"]), \
-                mock.patch.object(tether, "_remove", side_effect=removed.append), \
+        with mock.patch.object(herdr, "herdr_ls", return_value=[]), \
+                mock.patch.object(store, "_running", return_value=True), \
+                mock.patch.object(store, "session_paths", return_value=["/fake/transcript"]), \
+                mock.patch.object(store, "_remove", side_effect=removed.append), \
                 contextlib.redirect_stdout(io.StringIO()):
             with self.assertRaises(SystemExit) as cm:
-                tether.delete_space(["--id", "spOLD", "--sessions", "-y"])
+                workspace.delete_space(["--id", "spOLD", "--sessions", "-y"])
         self.assertEqual(cm.exception.code, 3)
         self.assertEqual(removed, [], "a running session's transcript must not be deleted")
 
     def test_delete_unlink_only_keeps_transcripts(self):
         self.write_state({"spOLD": {"name": "work", "terminals": {"t9": link()}}})
         removed = []
-        with mock.patch.object(tether, "herdr_ls", return_value=[]), \
-                mock.patch.object(tether, "session_paths", return_value=["/fake/transcript"]), \
-                mock.patch.object(tether, "_remove", side_effect=removed.append), \
+        with mock.patch.object(herdr, "herdr_ls", return_value=[]), \
+                mock.patch.object(store, "session_paths", return_value=["/fake/transcript"]), \
+                mock.patch.object(store, "_remove", side_effect=removed.append), \
                 contextlib.redirect_stdout(io.StringIO()):
-            tether.delete_space(["--id", "spOLD", "-y"])
+            workspace.delete_space(["--id", "spOLD", "-y"])
         self.assertEqual(removed, [])
         self.assertNotIn("spOLD", self.read_state())
 
@@ -311,25 +313,25 @@ class DeletingForGood(TetherTestCase):
         live = [{"id": "spOLD", "name": "work", "tabs": []}]
         closed = []
         running = [{"agent": "claude", "session": SESSION}]
-        with mock.patch.object(tether, "herdr_ls", side_effect=[live, live, []]), \
-                mock.patch.object(tether, "running_agents", side_effect=[running, []]), \
-                mock.patch.object(tether, "herdr_do", side_effect=lambda a: closed.append(a) or {}), \
-                mock.patch.object(tether, "backup_cmd"), \
-                mock.patch.object(tether.time, "sleep"), \
+        with mock.patch.object(herdr, "herdr_ls", side_effect=[live, live, []]), \
+                mock.patch.object(store, "running_agents", side_effect=[running, []]), \
+                mock.patch.object(herdr, "herdr_do", side_effect=lambda a: closed.append(a) or {}), \
+                mock.patch.object(backups, "backup_cmd"), \
+                mock.patch.object(time, "sleep"), \
                 contextlib.redirect_stdout(io.StringIO()):
-            tether.delete_space(["--id", "spOLD", "-y", "--close"])
+            workspace.delete_space(["--id", "spOLD", "-y", "--close"])
         self.assertEqual(closed, [["space.close", "--id", "spOLD", "--confirmed", "true"]])
         self.assertNotIn("spOLD", self.read_state())
 
     def test_permanent_delete_removes_the_backup_copy_too(self):
         self.write_state({"spOLD": {"name": "work", "terminals": {"t9": link(session=SESSION)}}})
         gone = []
-        with mock.patch.object(tether, "herdr_ls", return_value=[]), \
-                mock.patch.object(tether, "session_paths", return_value=["/fake/transcript"]), \
-                mock.patch.object(tether, "_remove"), \
-                mock.patch.object(tether, "delete_backup_of_session", side_effect=lambda a, ss: gone.append((a, ss))), \
+        with mock.patch.object(herdr, "herdr_ls", return_value=[]), \
+                mock.patch.object(store, "session_paths", return_value=["/fake/transcript"]), \
+                mock.patch.object(store, "_remove"), \
+                mock.patch.object(backups, "delete_backup_of_session", side_effect=lambda a, ss: gone.append((a, ss))), \
                 contextlib.redirect_stdout(io.StringIO()):
-            tether.delete_space(["--id", "spOLD", "--sessions", "-y"])
+            workspace.delete_space(["--id", "spOLD", "--sessions", "-y"])
         self.assertEqual(gone, [("claude", SESSION)])
 
     def test_purge_session_deletes_both_copies_and_refuses_a_running_one(self):
@@ -340,18 +342,18 @@ class DeletingForGood(TetherTestCase):
             with open(path, "w") as f:
                 f.write("x" * 5)
         with mock.patch.dict(os.environ, {"TETHER_BACKUP_DIR": bk}), \
-                mock.patch.object(tether, "_claude_home", return_value=claude):
-            with mock.patch.object(tether, "running_agents", return_value=[{"agent": "claude", "session": SESSION}]):
-                with self.assertRaises(tether.TetherError):
-                    tether.purge_session("claude", SESSION)
+                mock.patch.object(store, "_claude_home", return_value=claude):
+            with mock.patch.object(store, "running_agents", return_value=[{"agent": "claude", "session": SESSION}]):
+                with self.assertRaises(core.TetherError):
+                    backups.purge_session("claude", SESSION)
             self.assertTrue(all(os.path.exists(p) for p in paths), "a running session is not touched")
-            with mock.patch.object(tether, "running_agents", return_value=[]):
-                out = tether.purge_session("claude", SESSION)
+            with mock.patch.object(store, "running_agents", return_value=[]):
+                out = backups.purge_session("claude", SESSION)
             self.assertEqual(out["bytes"], 10)
             self.assertFalse(any(os.path.exists(p) for p in paths))
-            with mock.patch.object(tether, "running_agents", return_value=[]):
-                with self.assertRaises(tether.TetherError):
-                    tether.purge_session("claude", SESSION)
+            with mock.patch.object(store, "running_agents", return_value=[]):
+                with self.assertRaises(core.TetherError):
+                    backups.purge_session("claude", SESSION)
 
 
 class Sessions(TetherTestCase):
@@ -367,7 +369,7 @@ class Sessions(TetherTestCase):
         env.start()
         self.addCleanup(env.stop)
         for name in ("herdr_ls",):
-            p = mock.patch.object(tether, name, side_effect=tether.TetherError("no herdr in tests"))
+            p = mock.patch.object(herdr, name, side_effect=core.TetherError("no herdr in tests"))
             p.start()
             self.addCleanup(p.stop)
         self.transcript = os.path.join(self.claude, "projects", "-tmp-x", SESSION + ".jsonl")
@@ -387,7 +389,7 @@ class Sessions(TetherTestCase):
         return out.getvalue()
 
     def test_backup_copies_everything_once_and_is_private(self):
-        out = self.say(tether.backup_cmd, [])
+        out = self.say(backups.backup_cmd, [])
         self.assertIn("backed up 2 session(s)", out)
         for rel in ("claude/projects/-tmp-x/" + SESSION + ".jsonl", "claude/file-history/" + SESSION + "/snap",
                     "copilot/session-state/" + SESSION2 + "/events.jsonl"):
@@ -396,20 +398,20 @@ class Sessions(TetherTestCase):
         manifest = os.path.join(self.backup, "manifest.json")
         self.assertEqual(os.stat(manifest).st_mode & 0o777, 0o600)
         self.assertEqual(len(json.loads(slurp(manifest))["spaces"]["spLIVE"]["links"]), 2)
-        self.assertIn("0 file(s) new or changed", self.say(tether.backup_cmd, []), "second run copies nothing")
+        self.assertIn("0 file(s) new or changed", self.say(backups.backup_cmd, []), "second run copies nothing")
 
     def test_backup_picks_up_a_changed_transcript(self):
-        self.say(tether.backup_cmd, [])
+        self.say(backups.backup_cmd, [])
         with open(self.transcript, "a") as f:
             f.write('{"more": true}\n')
-        self.assertIn("1 file(s) new or changed", self.say(tether.backup_cmd, []))
+        self.assertIn("1 file(s) new or changed", self.say(backups.backup_cmd, []))
         copy = os.path.join(self.backup, "claude", "projects", "-tmp-x", SESSION + ".jsonl")
         self.assertIn("more", slurp(copy))
 
     def test_backup_never_deletes_what_the_agent_swept(self):
-        self.say(tether.backup_cmd, [])
+        self.say(backups.backup_cmd, [])
         os.remove(self.transcript)
-        self.say(tether.backup_cmd, [])
+        self.say(backups.backup_cmd, [])
         self.assertTrue(os.path.exists(os.path.join(self.backup, "claude", "projects", "-tmp-x", SESSION + ".jsonl")))
 
     def test_backup_inside_an_unignored_git_repo_is_refused(self):
@@ -417,23 +419,22 @@ class Sessions(TetherTestCase):
             self.skipTest("git not installed")
         repo = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, repo, True)
-        subprocess = tether.subprocess
         subprocess.run(["git", "init", "-q", repo], check=True)
         target = os.path.join(repo, "backups")
         with mock.patch.dict(os.environ, {"TETHER_BACKUP_DIR": target}):
-            with self.assertRaises(tether.TetherError) as cm:
-                self.say(tether.backup_cmd, [])
+            with self.assertRaises(core.TetherError) as cm:
+                self.say(backups.backup_cmd, [])
             self.assertIn("not git-ignored", str(cm.exception))
             with open(os.path.join(repo, ".gitignore"), "w") as f:
                 f.write("backups/\n")
-            self.assertIn("backed up 2 session(s)", self.say(tether.backup_cmd, []))
+            self.assertIn("backed up 2 session(s)", self.say(backups.backup_cmd, []))
 
     def test_restore_puts_back_a_swept_transcript_and_never_overwrites(self):
-        self.say(tether.backup_cmd, [])
+        self.say(backups.backup_cmd, [])
         os.remove(self.transcript)
         with open(self.extra, "w") as f:
             f.write("newer, written after the backup")
-        self.assertIn("restored", self.say(tether.restore_cmd, []))
+        self.assertIn("restored", self.say(backups.restore_cmd, []))
         self.assertTrue(os.path.exists(self.transcript))
         self.assertEqual(slurp(self.extra), "newer, written after the backup")
 
@@ -443,8 +444,8 @@ class Sessions(TetherTestCase):
                     '{"type": "user", "message": {"content": "Plan the   ledger\\nmigration"}, "cwd": "/tmp"}\n')
         with open(self.copilot_file, "w") as f:
             f.write('{"type": "session.start"}\n{"type": "user.message", "data": {"content": "/tether list"}}\n')
-        self.say(tether.backup_cmd, [])
-        rows = {r["agent"]: r for r in tether.backup_list()}
+        self.say(backups.backup_cmd, [])
+        rows = {r["agent"]: r for r in backups.backup_list()}
         self.assertEqual(rows["claude"]["title"], "Plan the ledger migration")  # wrappers skipped, spaces collapsed
         self.assertEqual(rows["copilot"]["title"], "/tether list")
         self.assertEqual((rows["claude"]["space"], rows["copilot"]["tab"]), ("work", "copilot"))
@@ -452,7 +453,7 @@ class Sessions(TetherTestCase):
         self.assertGreater(rows["claude"]["bytes"], 0)
 
     def test_backup_list_marks_swept_sessions_and_lists_each_once(self):
-        self.say(tether.backup_cmd, [])
+        self.say(backups.backup_cmd, [])
         os.remove(self.transcript)
         manifest = os.path.join(self.backup, "manifest.json")
         data = json.loads(slurp(manifest))
@@ -460,61 +461,61 @@ class Sessions(TetherTestCase):
                                    "links": [dict(data["spaces"]["spLIVE"]["links"][0], tab_name="old")]}
         with open(manifest, "w") as f:
             json.dump(data, f)
-        rows = [r for r in tether.backup_list() if r["agent"] == "claude"]
+        rows = [r for r in backups.backup_list() if r["agent"] == "claude"]
         self.assertEqual(len(rows), 1, "a session that moved between spaces is listed once")
         self.assertEqual(rows[0]["space_id"], "spLIVE")
         self.assertFalse(rows[0]["in_agent"])
         self.assertTrue(rows[0]["in_backup"], "gone from the agent but restorable")
 
     def test_backup_list_skips_sessions_that_exist_nowhere(self):
-        self.say(tether.backup_cmd, [])
+        self.say(backups.backup_cmd, [])
         shutil.rmtree(os.path.join(self.backup, "copilot"))
         shutil.rmtree(os.path.join(self.copilot, "session-state"))
-        self.assertEqual([r["agent"] for r in tether.backup_list()], ["claude"])
+        self.assertEqual([r["agent"] for r in backups.backup_list()], ["claude"])
 
     def test_restore_one_session_by_id(self):
-        self.say(tether.backup_cmd, [])
+        self.say(backups.backup_cmd, [])
         os.remove(self.transcript)
-        out = self.say(tether.restore_cmd, ["--session", SESSION])
+        out = self.say(backups.restore_cmd, ["--session", SESSION])
         self.assertIn("claude --resume " + SESSION, out)
         self.assertTrue(os.path.exists(self.transcript))
-        self.assertIn("already has", self.say(tether.restore_cmd, ["--session", SESSION]))
+        self.assertIn("already has", self.say(backups.restore_cmd, ["--session", SESSION]))
         with self.assertRaises(SystemExit):
-            self.say(tether.restore_cmd, ["--session", "00000000-0000-4000-8000-000000000009"])
+            self.say(backups.restore_cmd, ["--session", "00000000-0000-4000-8000-000000000009"])
         with self.assertRaises(SystemExit):
-            self.say(tether.restore_cmd, ["--session", "../../etc/passwd"])
+            self.say(backups.restore_cmd, ["--session", "../../etc/passwd"])
 
     def test_launch_restores_a_gone_transcript_from_the_backup(self):
-        self.say(tether.backup_cmd, [])
+        self.say(backups.backup_cmd, [])
         os.remove(self.transcript)
-        where = tether.Where("spLIVE", "work", "t1", "tab1", "claude")
+        where = herdr.Where("spLIVE", "work", "t1", "tab1", "claude")
         with mock.patch.dict(os.environ, {"TETHER_DRY_RUN": "1"}), \
-                mock.patch.object(tether, "resolve_where", return_value=(where, None)), \
-                mock.patch.object(tether, "find_tool", return_value="/bin/claude"):
+                mock.patch.object(herdr, "resolve_where", return_value=(where, None)), \
+                mock.patch.object(core, "find_tool", return_value="/bin/claude"):
             err = io.StringIO()
             with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()) as out:
-                tether.launch("claude", [])
+                launch.launch("claude", [])
         self.assertIn("(resume)", out.getvalue())
         self.assertIn("a backup has it", err.getvalue())
         self.assertFalse(os.path.exists(self.transcript), "a dry run restores nothing")
 
     def test_background_backup_runs_at_most_once_per_window(self):
         with mock.patch.dict(os.environ, {"TETHER_AUTO_BACKUP": "1"}), \
-                mock.patch.object(tether.subprocess, "Popen") as popen:
-            tether.auto_backup_if_due()
-            tether.auto_backup_if_due()
+                mock.patch.object(subprocess, "Popen") as popen:
+            backups.auto_backup_if_due()
+            backups.auto_backup_if_due()
         self.assertEqual(popen.call_count, 1)
         self.assertIn("backup", popen.call_args[0][0])
 
     def test_background_backup_is_off_unless_enabled(self):
-        with mock.patch.object(tether.subprocess, "Popen") as popen:
-            tether.auto_backup_if_due()
+        with mock.patch.object(subprocess, "Popen") as popen:
+            backups.auto_backup_if_due()
         popen.assert_not_called()
 
     def export(self, name="work"):
         out = os.path.join(tempfile.mkdtemp(), "bundle.tar.gz")
         self.addCleanup(shutil.rmtree, os.path.dirname(out), True)
-        self.say(tether.export_space, [name, "-o", out])
+        self.say(backups.export_space, [name, "-o", out])
         return out
 
     def test_export_then_import_moves_a_space_to_another_machine(self):
@@ -524,7 +525,7 @@ class Sessions(TetherTestCase):
         shutil.rmtree(os.path.join(self.claude, "file-history"))
         shutil.rmtree(os.path.join(self.copilot, "session-state"))
         self.write_state({})
-        out = self.say(tether.import_space, [bundle])
+        out = self.say(backups.import_space, [bundle])
         self.assertIn("tether open 'work'", out)
         self.assertEqual(slurp(self.transcript), '{"cwd": "/tmp"}\n')
         self.assertTrue(os.path.exists(self.copilot_file))
@@ -537,67 +538,67 @@ class Sessions(TetherTestCase):
         bundle = self.export()
         with open(self.transcript, "w") as f:
             f.write("this machine's own copy")
-        out = self.say(tether.import_space, [bundle])
+        out = self.say(backups.import_space, [bundle])
         self.assertIn("'work (imported)'", out)
         self.assertEqual(slurp(self.transcript), "this machine's own copy")
 
     def test_export_falls_back_to_the_backup_when_the_agent_swept_it(self):
-        self.say(tether.backup_cmd, [])
+        self.say(backups.backup_cmd, [])
         os.remove(self.transcript)
         shutil.rmtree(os.path.join(self.claude, "file-history"))
         bundle = self.export()
         os.remove(os.path.join(self.backup, "claude", "projects", "-tmp-x", SESSION + ".jsonl"))
-        with tether.tarfile.open(bundle) as tar:
+        with tarfile.open(bundle) as tar:
             names = tar.getnames()
         self.assertIn(f"files/claude/projects/-tmp-x/{SESSION}.jsonl", names)
 
     def test_options_are_parsed_strictly(self):
         with self.assertRaises(SystemExit) as cm:
-            tether.parse_opts(["--nope"], flags=("--json",))
+            core.parse_opts(["--nope"], flags=("--json",))
         self.assertIn("unknown option", str(cm.exception))
         with self.assertRaises(SystemExit):
-            tether.parse_opts(["--id"], valued=("--id",))
-        flags, vals, words = tether.parse_opts(["a", "--json", "--id", "x", "b"], flags=("--json",), valued=("--id",))
+            core.parse_opts(["--id"], valued=("--id",))
+        flags, vals, words = core.parse_opts(["a", "--json", "--id", "x", "b"], flags=("--json",), valued=("--id",))
         self.assertEqual((flags, vals, words), ({"--json"}, {"--id": "x"}, ["a", "b"]))
 
     def test_backup_by_id_touches_only_that_space(self):
         state = self.read_state()
         state["spOTHER"] = {"name": "other", "terminals": {"t5": link("claude", SESSION2, tab_name="x")}}
         self.write_state(state)
-        out = json.loads(self.say(tether.backup_cmd, ["--id", "spLIVE", "--json"]))
+        out = json.loads(self.say(backups.backup_cmd, ["--id", "spLIVE", "--json"]))
         self.assertEqual(out["sessions"], 2)
         manifest = json.loads(slurp(os.path.join(self.backup, "manifest.json")))
         self.assertEqual(list(manifest["spaces"]), ["spLIVE"])
         with self.assertRaises(SystemExit):
-            self.say(tether.backup_cmd, ["--id", "spNOPE"])
+            self.say(backups.backup_cmd, ["--id", "spNOPE"])
 
     def test_status_reports_what_is_backed_up_missing_and_recoverable(self):
-        status = json.loads(self.say(tether.backup_cmd, ["--status", "--json"]))
+        status = json.loads(self.say(backups.backup_cmd, ["--status", "--json"]))
         self.assertEqual((status["linked"], status["backed_up"], status["missing"]), (2, 0, 0))
         self.assertIsNone(status["last_backup"])
-        self.say(tether.backup_cmd, [])
+        self.say(backups.backup_cmd, [])
         os.remove(self.transcript)
-        status = json.loads(self.say(tether.backup_cmd, ["--status", "--json"]))
+        status = json.loads(self.say(backups.backup_cmd, ["--status", "--json"]))
         self.assertEqual((status["backed_up"], status["missing"], status["recoverable"]), (2, 1, 1))
         self.assertTrue(status["last_backup"])
         self.assertGreater(status["bytes"], 0)
-        self.assertIn("recoverable", self.say(tether.backup_cmd, ["--status"]))
+        self.assertIn("recoverable", self.say(backups.backup_cmd, ["--status"]))
 
     def test_list_json_says_which_links_a_backup_can_restore(self):
-        self.say(tether.backup_cmd, [])
+        self.say(backups.backup_cmd, [])
         os.remove(self.transcript)
-        with mock.patch.object(tether, "herdr_ls", return_value=[]):
-            rows = json.loads(self.say(tether.list_json))
+        with mock.patch.object(herdr, "herdr_ls", return_value=[]):
+            rows = json.loads(self.say(workspace.list_json))
         by_agent = {lk["agent"]: lk for lk in rows[0]["links"]}
         self.assertEqual((by_agent["claude"]["transcript"], by_agent["claude"]["recoverable"]), (False, True))
         self.assertEqual((by_agent["copilot"]["transcript"], by_agent["copilot"]["recoverable"]), (True, True))
-        self.assertTrue(tether.available("claude", SESSION))
+        self.assertTrue(backups.available("claude", SESSION))
 
     def test_export_to_a_folder_names_the_file_and_never_overwrites(self):
         folder = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, folder, True)
-        first = json.loads(self.say(tether.export_space, ["--id", "spLIVE", "-o", folder, "--json"]))
-        second = json.loads(self.say(tether.export_space, ["--id", "spLIVE", "-o", folder, "--json"]))
+        first = json.loads(self.say(backups.export_space, ["--id", "spLIVE", "-o", folder, "--json"]))
+        second = json.loads(self.say(backups.export_space, ["--id", "spLIVE", "-o", folder, "--json"]))
         self.assertTrue(first["path"].startswith(os.path.abspath(folder)))
         self.assertRegex(os.path.basename(first["path"]), r"^tether-export-work-\d{8}\.tar\.gz$")
         self.assertRegex(os.path.basename(second["path"]), r"^tether-export-work-\d{8}-2\.tar\.gz$")
@@ -606,7 +607,7 @@ class Sessions(TetherTestCase):
 
     def test_import_json_reports_the_new_closed_space(self):
         bundle = self.export()
-        result = json.loads(self.say(tether.import_space, [bundle, "--name", "moved", "--json"]))
+        result = json.loads(self.say(backups.import_space, [bundle, "--name", "moved", "--json"]))
         self.assertEqual((result["name"], result["sessions"]), ("moved", 2))
         self.assertIn(result["id"], self.read_state())
 
@@ -616,9 +617,9 @@ class Sessions(TetherTestCase):
         self.addCleanup(shutil.rmtree, os.path.dirname(path), True)
         manifest = {"version": 1, "space": {"name": "evil", "links": [
             {"agent": "claude", "session": session, "terminal": "t1"}]}}
-        with tether.tarfile.open(path, "w:gz") as tar:
+        with tarfile.open(path, "w:gz") as tar:
             blob = json.dumps(manifest).encode()
-            info = tether.tarfile.TarInfo("manifest.json")
+            info = tarfile.TarInfo("manifest.json")
             info.size = len(blob)
             tar.addfile(info, io.BytesIO(blob))
             for member in extra:
@@ -626,9 +627,9 @@ class Sessions(TetherTestCase):
         return path
 
     def member(self, name, data=b"x", kind=None):
-        info = tether.tarfile.TarInfo(name)
+        info = tarfile.TarInfo(name)
         if kind == "symlink":
-            info.type, info.linkname = tether.tarfile.SYMTYPE, "/etc/passwd"
+            info.type, info.linkname = tarfile.SYMTYPE, "/etc/passwd"
             return (info,)
         info.size = len(data)
         return info, io.BytesIO(data)
@@ -636,7 +637,7 @@ class Sessions(TetherTestCase):
     def assert_refused(self, bundle):
         before = self.read_state()
         with self.assertRaises(SystemExit) as cm:
-            self.say(tether.import_space, [bundle])
+            self.say(backups.import_space, [bundle])
         self.assertIn("refusing", str(cm.exception))
         self.assertEqual(self.read_state(), before)
         self.assertFalse(os.path.exists(os.path.join(self.claude, "evil")))
@@ -655,43 +656,43 @@ class Sessions(TetherTestCase):
 
     def test_import_rejects_something_that_is_not_an_export(self):
         path = os.path.join(self.backup, "junk.tar.gz")
-        with tether.tarfile.open(path, "w:gz"):
+        with tarfile.open(path, "w:gz"):
             pass
         with self.assertRaises(SystemExit) as cm:
-            self.say(tether.import_space, [path])
+            self.say(backups.import_space, [path])
         self.assertIn("not a tether export", str(cm.exception))
 
 
 class HomeDir(TetherTestCase):
     def dry(self, cwd, **env):
-        where = tether.Where("spLIVE", "work", "t1", "tab1", "claude")
+        where = herdr.Where("spLIVE", "work", "t1", "tab1", "claude")
         out = io.StringIO()
         with mock.patch.dict(os.environ, dict({"TETHER_DRY_RUN": "1"}, **env)), \
-                mock.patch.object(tether, "resolve_where", return_value=(where, None)), \
-                mock.patch.object(tether, "find_tool", return_value="/bin/claude"), \
-                mock.patch.object(tether.os, "getcwd", return_value=cwd), \
+                mock.patch.object(herdr, "resolve_where", return_value=(where, None)), \
+                mock.patch.object(core, "find_tool", return_value="/bin/claude"), \
+                mock.patch.object(os, "getcwd", return_value=cwd), \
                 contextlib.redirect_stdout(out):
-            tether.launch("claude", [])
+            launch.launch("claude", [])
         return out.getvalue()
 
     def test_config_round_trip_and_refuses_home(self):
         other = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, other, True)
         with contextlib.redirect_stdout(io.StringIO()):
-            tether.config_cmd(["home_dir", other])
-        self.assertEqual(tether.home_dir_setting(), other)
+            settings.config_cmd(["home_dir", other])
+        self.assertEqual(settings.home_dir_setting(), other)
         with self.assertRaises(SystemExit):
-            tether.config_cmd(["home_dir", "~"])
+            settings.config_cmd(["home_dir", "~"])
         with contextlib.redirect_stdout(io.StringIO()):
-            tether.config_cmd(["home_dir", "--unset"])
-        self.assertIsNone(tether.home_dir_setting())
+            settings.config_cmd(["home_dir", "--unset"])
+        self.assertIsNone(settings.home_dir_setting())
         with contextlib.redirect_stdout(io.StringIO()):
-            tether.config_cmd(["home_dir", "--default"])
+            settings.config_cmd(["home_dir", "--default"])
         fake = os.path.join(self.dir, "fakehome")
-        with mock.patch.object(tether, "DEFAULT_HOME_DIR", fake):
-            self.assertEqual(tether.home_dir_setting(), fake)
+        with mock.patch.object(settings, "DEFAULT_HOME_DIR", fake):
+            self.assertEqual(settings.home_dir_setting(), fake)
             self.assertTrue(os.path.isdir(fake), "created on first use")
-        self.assertEqual(oct(os.stat(tether.config_path()).st_mode & 0o777), "0o600")
+        self.assertEqual(oct(os.stat(core.config_path()).st_mode & 0o777), "0o600")
 
     def test_new_session_started_in_home_goes_to_home_dir(self):
         other = tempfile.mkdtemp()
@@ -703,7 +704,7 @@ class HomeDir(TetherTestCase):
         other = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, other, True)
         self.assertIn("would run: cd /tmp &&", self.dry("/tmp", TETHER_HOME_DIR=other))
-        with open(tether.config_path(), "w") as f:
+        with open(core.config_path(), "w") as f:
             json.dump({"home_dir": None}, f)
         self.assertIn(f"would run: cd {os.path.expanduser('~')} &&", self.dry(os.path.expanduser("~")))
 
@@ -719,15 +720,15 @@ class OpeningOneSession(TetherTestCase):
 
         ok = mock.Mock(returncode=0, stdout="", stderr="")
         out = io.StringIO()
-        with mock.patch.object(tether, "ensure_app"), \
-                mock.patch.object(tether, "find_tool", return_value="/bin/hc"), \
-                mock.patch.object(tether, "herdr_do", side_effect=herdr_do), \
-                mock.patch.object(tether, "herdr_ls", return_value=live), \
-                mock.patch.object(tether, "session_exists", return_value=False), \
-                mock.patch.object(tether, "restore_session", return_value=restored), \
-                mock.patch.object(tether.subprocess, "run", side_effect=lambda cmd, **k: sent.append(cmd) or ok), \
+        with mock.patch.object(herdr, "ensure_app"), \
+                mock.patch.object(core, "find_tool", return_value="/bin/hc"), \
+                mock.patch.object(herdr, "herdr_do", side_effect=herdr_do), \
+                mock.patch.object(herdr, "herdr_ls", return_value=live), \
+                mock.patch.object(store, "session_exists", return_value=False), \
+                mock.patch.object(backups, "restore_session", return_value=restored), \
+                mock.patch.object(subprocess, "run", side_effect=lambda cmd, **k: sent.append(cmd) or ok), \
                 contextlib.redirect_stdout(out):
-            tether.open_session([SESSION])
+            workspace.open_session([SESSION])
         return calls, sent, out.getvalue()
 
     def test_live_space_gets_a_new_tab_and_the_link_moves(self):
@@ -750,7 +751,7 @@ class OpeningOneSession(TetherTestCase):
             json.dump(manifest, f)
         live = []  # herdr has no space: it is closed, so the whole space is recreated
         with mock.patch.dict(os.environ, {"TETHER_BACKUP_DIR": os.path.join(self.dir, "bk")}), \
-                mock.patch.object(tether, "reopen_closed") as reopen:
+                mock.patch.object(workspace, "reopen_closed") as reopen:
             self.run_open(live, {})
         self.assertEqual(self.read_state()["spGONE"]["name"], "work")
         reopen.assert_called_once()
@@ -763,17 +764,17 @@ class OpeningOneSession(TetherTestCase):
 class Doctor(TetherTestCase):
     def test_reports_problems_and_never_crashes_without_herdr(self):
         self.write_state({"spOLD": {"name": "work", "terminals": {"t1": link()}}})
-        with mock.patch.object(tether, "find_tool", return_value=None), \
-                mock.patch.object(tether, "session_exists", return_value=False), \
+        with mock.patch.object(core, "find_tool", return_value=None), \
+                mock.patch.object(store, "session_exists", return_value=False), \
                 mock.patch.dict(os.environ, {"TETHER_BACKUP_DIR": os.path.join(self.dir, "none")}):
-            results = tether.doctor([])
+            results = doctor.doctor([])
         levels = {t: l for l, t, _ in results}
         self.assertEqual(levels["herdr-app not found"], "bad")
         self.assertEqual(levels["Herdr is not running"], "warn")
         self.assertTrue(any("no transcript anywhere" in t for _, t, _ in results))
         with self.assertRaises(SystemExit) as cm, contextlib.redirect_stdout(io.StringIO()):
-            with mock.patch.object(tether, "doctor", return_value=results):
-                tether.doctor_cmd([])
+            with mock.patch.object(doctor, "doctor", return_value=results):
+                doctor.doctor_cmd([])
         self.assertEqual(cm.exception.code, 1)
 
 
@@ -796,7 +797,7 @@ class ForgettingABackup(TetherTestCase):
                                   "spKEEP": {"name": "kept", "links": [l(SESSION2)]}}}, fh)
 
     def test_removes_only_the_deleted_spaces_copies(self):
-        out = tether.forget_backup("spGONE")
+        out = backups.forget_backup("spGONE")
         self.assertEqual((out["sessions"], out["bytes"]), (1, 10))
         self.assertFalse(os.path.exists(self.f1))
         self.assertTrue(os.path.exists(self.f2))
@@ -805,9 +806,9 @@ class ForgettingABackup(TetherTestCase):
 
     def test_session_linked_under_a_new_space_id_counts_as_linked(self):
         self.write_state({"spNEW": {"name": "old", "terminals": {"t1": link()}}})
-        with mock.patch.object(tether, "herdr_ls", return_value=[]), \
-                mock.patch.object(tether, "session_title", return_value="t"):
-            rows = {r["session"]: r["linked"] for r in tether.backup_list()}
+        with mock.patch.object(herdr, "herdr_ls", return_value=[]), \
+                mock.patch.object(backups, "session_title", return_value="t"):
+            rows = {r["session"]: r["linked"] for r in backups.backup_list()}
         self.assertTrue(rows[SESSION])
         self.assertFalse(rows[SESSION2])
 
@@ -818,57 +819,57 @@ class ForgettingABackup(TetherTestCase):
         m["spaces"].pop("spKEEP")
         with open(os.path.join(self.bk, "manifest.json"), "w") as fh:
             json.dump(m, fh)
-        out = tether.forget_backup("spGONE", only_session=SESSION)
+        out = backups.forget_backup("spGONE", only_session=SESSION)
         self.assertEqual(out["sessions"], 1)
         self.assertFalse(os.path.exists(self.f1))
         self.assertTrue(os.path.exists(self.f2), "the other session is untouched")
         with open(os.path.join(self.bk, "manifest.json")) as fh:
             left = json.load(fh)["spaces"]["spGONE"]["links"]
         self.assertEqual([l["session"] for l in left], [SESSION2])
-        tether.forget_backup("spGONE", only_session=SESSION2)
+        backups.forget_backup("spGONE", only_session=SESSION2)
         with open(os.path.join(self.bk, "manifest.json")) as fh:
             self.assertNotIn("spGONE", json.load(fh)["spaces"], "no sessions left: the space entry goes too")
 
     def test_any_session_backup_can_be_deleted_even_a_linked_one(self):
         self.write_state({"spLIVE": {"name": "work", "terminals": {"t1": link(session=SESSION)}}})
-        out = tether.delete_backup_of_session("claude", SESSION)
+        out = backups.delete_backup_of_session("claude", SESSION)
         self.assertEqual((out["sessions"], out["bytes"]), (1, 10))
         self.assertFalse(os.path.exists(self.f1))
         self.assertTrue(os.path.exists(self.f2), "other sessions untouched")
         with open(os.path.join(self.bk, "manifest.json")) as fh:
             self.assertEqual(list(json.load(fh)["spaces"]), ["spKEEP"], "the emptied space entry is gone")
         self.assertEqual(self.read_state()["spLIVE"]["terminals"]["t1"]["session"], SESSION, "the link is untouched")
-        with self.assertRaises(tether.TetherError):
-            tether.delete_backup_of_session("claude", SESSION)
-        with self.assertRaises(tether.TetherError):
-            tether.delete_backup_of_session("claude", "../../etc")
+        with self.assertRaises(core.TetherError):
+            backups.delete_backup_of_session("claude", SESSION)
+        with self.assertRaises(core.TetherError):
+            backups.delete_backup_of_session("claude", "../../etc")
 
     def test_a_linked_space_is_refused_and_a_shared_session_kept(self):
         self.write_state({"spGONE": {"name": "old", "terminals": {"t1": link()}}})
-        with self.assertRaises(tether.TetherError):
-            tether.forget_backup("spGONE")
+        with self.assertRaises(core.TetherError):
+            backups.forget_backup("spGONE")
         self.write_state({})
         with open(os.path.join(self.bk, "manifest.json")) as fh:
             m = json.load(fh)
         m["spaces"]["spKEEP"]["links"].append({"agent": "claude", "session": SESSION})
         with open(os.path.join(self.bk, "manifest.json"), "w") as fh:
             json.dump(m, fh)
-        self.assertEqual(tether.forget_backup("spGONE")["sessions"], 0)
+        self.assertEqual(backups.forget_backup("spGONE")["sessions"], 0)
         self.assertTrue(os.path.exists(self.f1), "another space still uses this session")
 
 
 class Forking(TetherTestCase):
     def test_claude_fork_starts_with_fork_session_and_the_new_id(self):
         self.write_state({"spLIVE": {"name": "work", "terminals": {"t1": link(session=SESSION2, fork_of=SESSION)}}})
-        where = tether.Where("spLIVE", "work", "t1", "tab1", "claude")
+        where = herdr.Where("spLIVE", "work", "t1", "tab1", "claude")
         out = io.StringIO()
         have = lambda agent, sess: sess == SESSION  # only the original has a transcript
         with mock.patch.dict(os.environ, {"TETHER_DRY_RUN": "1"}), \
-                mock.patch.object(tether, "resolve_where", return_value=(where, None)), \
-                mock.patch.object(tether, "find_tool", return_value="/bin/claude"), \
-                mock.patch.object(tether, "session_exists", side_effect=have), \
+                mock.patch.object(herdr, "resolve_where", return_value=(where, None)), \
+                mock.patch.object(core, "find_tool", return_value="/bin/claude"), \
+                mock.patch.object(store, "session_exists", side_effect=have), \
                 contextlib.redirect_stdout(out):
-            tether.launch("claude", [])
+            launch.launch("claude", [])
         self.assertIn(f"claude --resume {SESSION} --fork-session --session-id {SESSION2}", out.getvalue())
 
     def test_copilot_copy_gets_a_new_id_everywhere_and_no_lock(self):
@@ -879,8 +880,8 @@ class Forking(TetherTestCase):
                            (f"inuse.1.lock", "")):
             with open(os.path.join(src, name), "w") as f:
                 f.write(text)
-        with mock.patch.object(tether, "_copilot_home", return_value=home):
-            tether.copy_copilot_session(SESSION, SESSION2)
+        with mock.patch.object(store, "_copilot_home", return_value=home):
+            workspace.copy_copilot_session(SESSION, SESSION2)
         dst = os.path.join(home, "session-state", SESSION2)
         self.assertEqual(slurp(os.path.join(dst, "workspace.yaml")), f"id: {SESSION2}\n")
         self.assertIn(SESSION2, slurp(os.path.join(dst, "events.jsonl")))
@@ -899,17 +900,17 @@ class Forking(TetherTestCase):
         live = [{"id": "spOLD", "name": "work", "tabs": [{"id": "tab1", "name": "c", "terminals": [{"terminal": "t1"}, {"terminal": "t2"}]}]},
                 {"id": "spNEW", "name": "work (fork)", "tabs": [{"id": "tabN", "name": "c", "terminals": [{"terminal": "n1"}, {"terminal": "n2"}]}]}]
         ok = mock.Mock(returncode=0, stdout="", stderr="")
-        with mock.patch.object(tether, "ensure_app"), \
-                mock.patch.object(tether, "find_tool", return_value="/bin/hc"), \
-                mock.patch.object(tether, "herdr_do", side_effect=herdr_do), \
-                mock.patch.object(tether, "herdr_ls", side_effect=[live[:1], live[:1], live]), \
-                mock.patch.object(tether, "running_agents", return_value=[]), \
-                mock.patch.object(tether, "session_exists", return_value=True), \
-                mock.patch.object(tether, "backup_cmd"), \
-                mock.patch.object(tether, "copy_copilot_session") as copy, \
-                mock.patch.object(tether.subprocess, "run", return_value=ok), \
+        with mock.patch.object(herdr, "ensure_app"), \
+                mock.patch.object(core, "find_tool", return_value="/bin/hc"), \
+                mock.patch.object(herdr, "herdr_do", side_effect=herdr_do), \
+                mock.patch.object(herdr, "herdr_ls", side_effect=[live[:1], live[:1], live]), \
+                mock.patch.object(store, "running_agents", return_value=[]), \
+                mock.patch.object(store, "session_exists", return_value=True), \
+                mock.patch.object(backups, "backup_cmd"), \
+                mock.patch.object(workspace, "copy_copilot_session") as copy, \
+                mock.patch.object(subprocess, "run", return_value=ok), \
                 contextlib.redirect_stdout(io.StringIO()):
-            tether.fork_space(["--id", "spOLD", "-y"])
+            workspace.fork_space(["--id", "spOLD", "-y"])
         state = self.read_state()
         self.assertEqual(len(state["spOLD"]["terminals"]), 2, "the original keeps its links")
         new = state["spNEW"]
@@ -932,9 +933,9 @@ class Forking(TetherTestCase):
             {"agent": "claude", "pid": 1, "terminal": "t1", "session": SESSION2, "cwd": "/tmp"},   # t1 already linked
             {"agent": "copilot", "pid": 2, "terminal": "t2", "session": SESSION2, "cwd": "/tmp"},  # new
             {"agent": "claude", "pid": 3, "terminal": "t3", "session": SESSION, "cwd": "/tmp"}]    # session linked already
-        with mock.patch.object(tether, "herdr_ls", return_value=live), \
-                mock.patch.object(tether, "running_agents", return_value=running):
-            got = tether.adopt()
+        with mock.patch.object(herdr, "herdr_ls", return_value=live), \
+                mock.patch.object(store, "running_agents", return_value=running):
+            got = store.adopt()
         self.assertEqual([(g[1], g[2]) for g in got], [("two", "copilot")])
         terms = self.read_state()["spLIVE"]["terminals"]
         self.assertEqual(terms["t1"]["session"], SESSION, "an existing link is never changed")
@@ -946,25 +947,25 @@ class Forking(TetherTestCase):
                           "spOTHER": {"name": "other", "terminals": {"t9": link(session=SESSION2, tab="tabX", tab_name="x")}}})
         live = [{"id": "spLIVE", "name": "renamed", "tabs": [{"id": "tab1", "name": "work", "terminals": [{"terminal": "t1"}]}]},
                 {"id": "spOTHER", "name": "other renamed", "tabs": [{"id": "tabX", "name": "x2", "terminals": [{"terminal": "t9"}]}]}]
-        with mock.patch.object(tether, "herdr_ls", return_value=live), mock.patch.object(tether, "running_agents", return_value=[]):
-            tether.adopt("spLIVE")
+        with mock.patch.object(herdr, "herdr_ls", return_value=live), mock.patch.object(store, "running_agents", return_value=[]):
+            store.adopt("spLIVE")
         data = self.read_state()
         self.assertEqual((data["spLIVE"]["name"], data["spLIVE"]["terminals"]["t1"]["tab_name"]), ("renamed", "work"))
         self.assertEqual(data["spOTHER"]["name"], "other", "adopt for one space leaves the others alone")
-        with mock.patch.object(tether, "herdr_ls", return_value=live), mock.patch.object(tether, "running_agents", return_value=[]):
-            tether.adopt()
+        with mock.patch.object(herdr, "herdr_ls", return_value=live), mock.patch.object(store, "running_agents", return_value=[]):
+            store.adopt()
         self.assertEqual(self.read_state()["spOTHER"]["name"], "other renamed")
 
     def test_adopt_runs_on_space_switch_and_backup_but_never_raises(self):
         os.environ.pop("TETHER_NO_ADOPT")
-        with mock.patch.object(tether, "adopt", return_value=[]) as ad:
-            tether.touch("spLIVE")
+        with mock.patch.object(store, "adopt", return_value=[]) as ad:
+            launch.touch("spLIVE")
         ad.assert_called_once_with("spLIVE")
-        with mock.patch.object(tether, "adopt", side_effect=tether.TetherError("herdr is not running")):
-            self.assertEqual(tether.safe_adopt(), [], "no Herdr: nothing happens, nothing raised")
-        with mock.patch.object(tether, "adopt") as ad:
+        with mock.patch.object(store, "adopt", side_effect=core.TetherError("herdr is not running")):
+            self.assertEqual(store.safe_adopt(), [], "no Herdr: nothing happens, nothing raised")
+        with mock.patch.object(store, "adopt") as ad:
             with contextlib.redirect_stdout(io.StringIO()):
-                tether.backup_cmd(["--quiet"])
+                backups.backup_cmd(["--quiet"])
             ad.assert_called_once()
 
     def test_an_unused_fork_is_forked_from_the_session_it_was_forked_from(self):
@@ -974,17 +975,17 @@ class Forking(TetherTestCase):
                 {"id": "spNEW", "name": "work (fork 2)", "tabs": [{"id": "tabN", "name": "c", "terminals": [{"terminal": "n1"}]}]}]
         ok = mock.Mock(returncode=0, stdout="", stderr="")
         have = lambda agent, sess: sess == SESSION  # only the original session has a transcript
-        with mock.patch.object(tether, "ensure_app"), \
-                mock.patch.object(tether, "find_tool", return_value="/bin/hc"), \
-                mock.patch.object(tether, "herdr_do", return_value={"space": "spNEW", "terminal": "n1"}), \
-                mock.patch.object(tether, "herdr_ls", side_effect=[live[:1], live[:1], live]), \
-                mock.patch.object(tether, "running_agents", return_value=[]), \
-                mock.patch.object(tether, "session_exists", side_effect=have), \
-                mock.patch.object(tether, "restore_session", return_value=0), \
-                mock.patch.object(tether, "backup_cmd"), \
-                mock.patch.object(tether.subprocess, "run", return_value=ok), \
+        with mock.patch.object(herdr, "ensure_app"), \
+                mock.patch.object(core, "find_tool", return_value="/bin/hc"), \
+                mock.patch.object(herdr, "herdr_do", return_value={"space": "spNEW", "terminal": "n1"}), \
+                mock.patch.object(herdr, "herdr_ls", side_effect=[live[:1], live[:1], live]), \
+                mock.patch.object(store, "running_agents", return_value=[]), \
+                mock.patch.object(store, "session_exists", side_effect=have), \
+                mock.patch.object(backups, "restore_session", return_value=0), \
+                mock.patch.object(backups, "backup_cmd"), \
+                mock.patch.object(subprocess, "run", return_value=ok), \
                 contextlib.redirect_stdout(io.StringIO()):
-            tether.fork_space(["--id", "spOLD", "-y"])
+            workspace.fork_space(["--id", "spOLD", "-y"])
         (entry,) = self.read_state()["spNEW"]["terminals"].values()
         self.assertEqual(entry["fork_of"], SESSION, "forks the original, not the unused fork")
 
@@ -997,21 +998,21 @@ class Forking(TetherTestCase):
         self.write_state({"spF": {"name": "work (fork)", "terminals": {
             "t1": link(session=SESSION2, fork_of=SESSION)}}})
         with mock.patch.dict(os.environ, {"TETHER_BACKUP_DIR": bk}), \
-                mock.patch.object(tether, "_claude_home", return_value=os.path.join(self.dir, "claude")), \
-                mock.patch.object(tether, "live_home", return_value=os.path.join(self.dir, "claude")), \
+                mock.patch.object(store, "_claude_home", return_value=os.path.join(self.dir, "claude")), \
+                mock.patch.object(backups, "live_home", return_value=os.path.join(self.dir, "claude")), \
                 contextlib.redirect_stdout(io.StringIO()) as out:
-            tether.backup_cmd(["--id", "spF"])
+            backups.backup_cmd(["--id", "spF"])
             copied = os.path.join(bk, "claude", "projects", "p", SESSION + ".jsonl")
             self.assertTrue(os.path.exists(copied), "the source session is in the backup")
             with open(os.path.join(bk, "manifest.json")) as f:
                 (lk,) = json.load(f)["spaces"]["spF"]["links"]
             self.assertEqual(lk["fork_of"], SESSION)
-            status = tether.backup_status({"spF": self.read_state()["spF"]})
+            status = backups.backup_status({"spF": self.read_state()["spF"]})
         self.assertEqual((status["backed_up"], status["missing"]), (1, 0))
 
     def test_name_gets_a_number_when_taken(self):
-        self.assertEqual(tether.fork_name("work", {"work (fork)"}), "work (fork 2)")
-        self.assertEqual(tether.fork_name("work (fork 2)", {"work (fork)", "work (fork 2)"}), "work (fork 3)")
+        self.assertEqual(workspace.fork_name("work", {"work (fork)"}), "work (fork 2)")
+        self.assertEqual(workspace.fork_name("work (fork 2)", {"work (fork)", "work (fork 2)"}), "work (fork 3)")
 
 
 class Searching(TetherTestCase):
@@ -1020,8 +1021,8 @@ class Searching(TetherTestCase):
         self.claude = os.path.join(self.dir, "claude")
         self.bk = os.path.join(self.dir, "bk")
         for patcher in (mock.patch.dict(os.environ, {"TETHER_BACKUP_DIR": self.bk}),
-                        mock.patch.object(tether, "_claude_home", return_value=self.claude),
-                        mock.patch.object(tether, "live_home", return_value=self.claude)):
+                        mock.patch.object(store, "_claude_home", return_value=self.claude),
+                        mock.patch.object(backups, "live_home", return_value=self.claude)):
             patcher.start()
             self.addCleanup(patcher.stop)
 
@@ -1039,53 +1040,53 @@ class Searching(TetherTestCase):
 
     def test_only_what_was_said_is_read(self):
         path = self.transcript(SESSION, [("user", "hello kafka"), ("assistant", "lag is the consumer")])
-        self.assertEqual(tether.readable_turns("claude", path), [("user", "hello kafka"), ("assistant", "lag is the consumer")])
+        self.assertEqual(search.readable_turns("claude", path), [("user", "hello kafka"), ("assistant", "lag is the consumer")])
         cop = os.path.join(self.dir, "events.jsonl")
         with open(cop, "w") as f:
             f.write(json.dumps({"type": "user.message", "data": {"content": "copilot question", "transformedContent": "<x>"}}) + "\n")
             f.write(json.dumps({"type": "tool.execution_start", "data": {"content": "NOPE"}}) + "\n")
             f.write(json.dumps({"type": "assistant.message", "data": {"content": ""}}) + "\n")
             f.write(json.dumps({"type": "assistant.message", "data": {"content": "copilot answer"}}) + "\n")
-        self.assertEqual(tether.readable_turns("copilot", cop), [("user", "copilot question"), ("assistant", "copilot answer")])
+        self.assertEqual(search.readable_turns("copilot", cop), [("user", "copilot question"), ("assistant", "copilot answer")])
 
     def test_keyword_ranking_prefers_rare_terms_phrases_and_partial_words(self):
         a = self.transcript(SESSION, [("user", "why is the grafana dashboard empty"), ("assistant", "the datasource is wrong")])
         b = self.transcript(SESSION2, [("user", "the dashboard for billing"), ("assistant", "ok")])
         docs = [{"agent": "claude", "path": a, "src": SESSION, "session": SESSION, "space": "A", "state": "open", "tab": "", "last_used": ""},
                 {"agent": "claude", "path": b, "src": SESSION2, "session": SESSION2, "space": "B", "state": "open", "tab": "", "last_used": ""}]
-        terms = tether.query_terms("which grafana dashboard was empty?")
+        terms = search.query_terms("which grafana dashboard was empty?")
         self.assertEqual(terms, ["grafana", "dashboard", "empty"])
-        rows = tether.lexical_rank(terms, docs)
+        rows = search.lexical_rank(terms, docs)
         self.assertEqual([r["space"] for r in rows], ["A", "B"])
         self.assertEqual(rows[0]["score"], 100)
         self.assertNotIn("SECRETWORD", json.dumps([r["snippets"] for r in rows]))
-        self.assertEqual([r["space"] for r in tether.lexical_rank(["grafan"], docs)], ["A"], "partial words match")
-        self.assertEqual(tether.lexical_rank(["zzz"], docs), [])
+        self.assertEqual([r["space"] for r in search.lexical_rank(["grafan"], docs)], ["A"], "partial words match")
+        self.assertEqual(search.lexical_rank(["zzz"], docs), [])
 
     def test_a_possessive_or_a_short_word_does_not_flood_the_results(self):
         # "Acme's" used to give "acme" and "s"; "s" is inside nearly every word, so it decided the ranking.
-        self.assertEqual(tether.query_terms("Acme's US partner"), ["acme", "us", "partner"])
-        self.assertEqual(tether.query_terms("Acme’s US partner"), ["acme", "us", "partner"], "a typographic apostrophe too")
-        self.assertEqual(tether.query_terms("a"), ["a"], "a query of nothing but one letter still searches")
+        self.assertEqual(search.query_terms("Acme's US partner"), ["acme", "us", "partner"])
+        self.assertEqual(search.query_terms("Acme’s US partner"), ["acme", "us", "partner"], "a typographic apostrophe too")
+        self.assertEqual(search.query_terms("a"), ["a"], "a query of nothing but one letter still searches")
         a = self.transcript(SESSION, [("user", "the US partner for acme"), ("assistant", "ok")])
         b = self.transcript(SESSION2, [("user", "status of the business, it is used a lot"), ("assistant", "yes")])
         c = self.transcript("33333333-3333-4333-8333-333333333333", [("user", "partner partner partner partner"), ("assistant", "ok")])
         docs = [{"agent": "claude", "path": p, "src": s, "session": s, "space": n, "state": "open", "tab": "", "last_used": ""}
                 for p, s, n in ((a, SESSION, "A"), (b, SESSION2, "B"), (c, "33333333-3333-4333-8333-333333333333", "C"))]
         terms = ["acme", "us", "partner"]
-        rows = tether.lexical_rank(terms, docs)
+        rows = search.lexical_rank(terms, docs)
         self.assertEqual([r["space"] for r in rows], ["A", "C"], "'us' is not found inside 'status', 'business' or 'used'; "
                          "all the words rank above one word said often")
         self.assertIn("US partner", rows[0]["snippets"][0]["text"])
-        self.assertEqual([r["space"] for r in tether.lexical_rank(["us"], docs)], ["A"], "a short word matches as a whole word")
-        self.assertEqual([r["space"] for r in tether.lexical_rank(["stat"], docs)], ["B"], "a longer term still matches inside a word")
+        self.assertEqual([r["space"] for r in search.lexical_rank(["us"], docs)], ["A"], "a short word matches as a whole word")
+        self.assertEqual([r["space"] for r in search.lexical_rank(["stat"], docs)], ["B"], "a longer term still matches inside a word")
 
     def corpus(self, scopes, live_ids=("spOPEN",)):
         self.write_state({"spOPEN": {"name": "o", "terminals": {"t1": link(session=SESSION)}},
                           "spCLOSED": {"name": "c", "terminals": {"t2": link(session=SESSION2)}}})
         live = [{"id": i, "name": "o", "tabs": []} for i in live_ids]
-        with mock.patch.object(tether, "herdr_ls", return_value=live):
-            return {(d["state"], d["session"]): d for d in tether.search_corpus(scopes)}
+        with mock.patch.object(herdr, "herdr_ls", return_value=live):
+            return {(d["state"], d["session"]): d for d in search.search_corpus(scopes)}
 
     def test_scopes_pick_open_and_closed_spaces(self):
         self.transcript(SESSION, [("user", "x")])
@@ -1117,7 +1118,7 @@ class Searching(TetherTestCase):
         b = self.transcript(SESSION2, [("user", "grafana alerts"), ("assistant", "done")])
         docs = [{"agent": "claude", "path": a, "src": SESSION, "session": SESSION, "space": "A", "state": "open", "tab": "", "last_used": "2026-01-01"},
                 {"agent": "claude", "path": b, "src": SESSION2, "session": SESSION2, "space": "B", "state": "closed", "tab": "", "last_used": "2026-01-02"}]
-        rows = tether.lexical_rank(["grafana"], docs)
+        rows = search.lexical_rank(["grafana"], docs)
         prompts = []
 
         def fake(prompt, model):
@@ -1125,29 +1126,29 @@ class Searching(TetherTestCase):
             if "ranks" in prompt or "rank past" in prompt:
                 return 'Sure: [{"id": 2, "score": 90, "why": "alerts"}, {"id": 1, "score": 10, "why": "no"}]', 0.01
             return '{"score": 77, "why": "it matches", "quote": "grafana alerts"}', 0.02
-        with mock.patch.object(tether, "ask_claude", side_effect=fake):
-            ranked, cost = tether.rank_with_ai("alerts question", rows, "sonnet")
+        with mock.patch.object(ai, "ask_claude", side_effect=fake):
+            ranked, cost = search.rank_with_ai("alerts question", rows, "sonnet")
             self.assertEqual([r["space"] for r in ranked], ["B", "A"])
             self.assertEqual((ranked[0]["score"], ranked[0]["why"]), (90, "alerts"))
-            deep, dcost = tether.deep_read("alerts question", ranked[:1], "sonnet")
+            deep, dcost = search.deep_read("alerts question", ranked[:1], "sonnet")
         self.assertEqual((deep[0]["score"], deep[0]["quote"]), (77, "grafana alerts"))
         self.assertEqual(prompts[0].count("[1]") + prompts[0].count("[2]"), 2)
         self.assertNotIn("SECRETWORD", "".join(prompts))
-        with mock.patch.object(tether, "ask_claude", return_value=("not json at all", None)):
-            with self.assertRaises(tether.TetherError):
-                tether.rank_with_ai("q", rows, "sonnet")
+        with mock.patch.object(ai, "ask_claude", return_value=("not json at all", None)):
+            with self.assertRaises(core.TetherError):
+                search.rank_with_ai("q", rows, "sonnet")
 
     def run_search(self, *args):
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
-            tether.search_cmd(list(args))
+            search.search_cmd(list(args))
         return out.getvalue()
 
     def test_command_estimates_falls_back_to_recent_and_validates(self):
         self.transcript(SESSION, [("user", "grafana dashboard"), ("assistant", "done")])
         self.write_state({"spOPEN": {"name": "o", "terminals": {"t1": link(session=SESSION)}}})
         live = [{"id": "spOPEN", "name": "o", "tabs": []}]
-        with mock.patch.object(tether, "herdr_ls", return_value=live):
+        with mock.patch.object(herdr, "herdr_ls", return_value=live):
             out = json.loads(self.run_search("grafana", "--json"))
             self.assertEqual((out["tier"], out["corpus"], len(out["results"])), (1, 1, 1))
             self.assertGreater(out["estimate"]["rank_tokens"], 0)
@@ -1155,7 +1156,7 @@ class Searching(TetherTestCase):
             nothing = json.loads(self.run_search("zzzqqq", "--json"))
             self.assertEqual(nothing["results"], [])
             self.assertTrue(nothing["estimate"]["no_keyword_match"])
-            with mock.patch.object(tether, "ask_claude", return_value=('[{"id": 1, "score": 55, "why": "recent"}]', 0.01)):
+            with mock.patch.object(ai, "ask_claude", return_value=('[{"id": 1, "score": 55, "why": "recent"}]', 0.01)):
                 ranked = json.loads(self.run_search("zzzqqq", "--rank", "--json"))
             self.assertTrue(ranked["fallback"])
             self.assertEqual(ranked["results"][0]["score"], 55)
@@ -1197,7 +1198,7 @@ class ContinueInOtherAgent(TetherTestCase):
     EXPECTED = [("user", "run it"), ("assistant", "starting\n\n[used Bash: echo hi]\n\n[result: hi]\n\nit printed hi"), ("user", "thanks")]
 
     def test_claude_turns_fold_tool_calls_into_the_assistant_turn_and_skip_noise(self):
-        self.assertEqual(tether.continue_turns("claude", self.claude_transcript()), self.EXPECTED)
+        self.assertEqual(continue_.continue_turns("claude", self.claude_transcript()), self.EXPECTED)
 
     def test_copilot_turns_do_the_same(self):
         folder = os.path.join(self.copilot, "session-state", SESSION)
@@ -1214,28 +1215,28 @@ class ContinueInOtherAgent(TetherTestCase):
         path = os.path.join(folder, "events.jsonl")
         with open(path, "w") as f:
             f.write("\n".join(json.dumps(x) for x in events) + "\n")
-        self.assertEqual(tether.continue_turns("copilot", path), self.EXPECTED)
+        self.assertEqual(continue_.continue_turns("copilot", path), self.EXPECTED)
 
     def test_a_conversation_survives_a_round_trip_through_either_store(self):
         turns = [("user", "one"), ("assistant", "two"), ("user", "three"), ("assistant", "four")]
-        sid, folder = tether.write_copilot_session(turns, self.work, "name")
-        self.assertEqual(tether.continue_turns("copilot", os.path.join(folder, "events.jsonl")), turns)
-        sid, path = tether.write_claude_session(turns, self.work)
-        self.assertEqual(tether.continue_turns("claude", path), turns)
+        sid, folder = continue_.write_copilot_session(turns, self.work, "name")
+        self.assertEqual(continue_.continue_turns("copilot", os.path.join(folder, "events.jsonl")), turns)
+        sid, path = continue_.write_claude_session(turns, self.work)
+        self.assertEqual(continue_.continue_turns("claude", path), turns)
         with open(path) as f:
             lines = [json.loads(x) for x in f]
         self.assertEqual([x["parentUuid"] for x in lines[1:]], [x["uuid"] for x in lines[:-1]], "each line points at the one before")
-        self.assertTrue(tether.transcript_file("claude", sid) and tether.session_exists("claude", sid))
+        self.assertTrue(search.transcript_file("claude", sid) and store.session_exists("claude", sid))
 
     def test_a_long_conversation_keeps_the_newest_turns_and_says_what_was_left_out(self):
         turns = [(("user", "assistant")[i % 2], f"message {i} " + "x" * 40_000) for i in range(10)]
-        kept, dropped = tether.continue_trim(turns, "claude", "copilot")
+        kept, dropped = continue_.continue_trim(turns, "claude", "copilot")
         self.assertGreater(dropped, 0)
         self.assertEqual(kept[0][0], "user")
         self.assertIn("left out", kept[0][1])
         self.assertEqual(kept[1], ("assistant", "Understood."))
         self.assertTrue(kept[-1][1].startswith("message 9 "), "the newest turn is kept")
-        self.assertEqual(tether.continue_trim(turns[:2], "claude", "copilot"), (turns[:2], 0))
+        self.assertEqual(continue_.continue_trim(turns[:2], "claude", "copilot"), (turns[:2], 0))
 
     def linked(self, *terminals):
         self.write_state({"spLIVE": {"name": "work", "terminals": {t: link(session=SESSION, cwd=self.work, pid=4242, pid_started="x", tab_name="one")
@@ -1246,16 +1247,16 @@ class ContinueInOtherAgent(TetherTestCase):
         live = [{"id": "spLIVE", "name": "work", "tabs": [
             {"id": "tab1", "name": "one", "terminals": [{"terminal": t} for t in (tab_terminals or ["t1"])]},
             {"id": "tab9", "name": "one · copilot", "terminals": [{"terminal": "t9"}]}]}]
-        where = tether.Where("spLIVE", "work", "t1", "tab1", "one")
+        where = herdr.Where("spLIVE", "work", "t1", "tab1", "one")
         typed, opened = [], []
-        with mock.patch.object(tether, "resolve_where", return_value=(where, None)), mock.patch.object(tether, "ensure_app"), \
-                mock.patch.object(tether, "herdr_ls", return_value=live), \
-                mock.patch.object(tether, "herdr_do", side_effect=lambda a: opened.append(a) or {"terminal": "t9"}), \
-                mock.patch.object(tether, "find_tool", side_effect=lambda n: "/bin/true" if n != "hc" or hc else None), \
-                mock.patch.object(tether, "tether_cmd", return_value="tether"), \
-                mock.patch.object(tether.subprocess, "run", side_effect=lambda cmd, **k: typed.append(cmd) or mock.Mock(returncode=0)), \
+        with mock.patch.object(herdr, "resolve_where", return_value=(where, None)), mock.patch.object(herdr, "ensure_app"), \
+                mock.patch.object(herdr, "herdr_ls", return_value=live), \
+                mock.patch.object(herdr, "herdr_do", side_effect=lambda a: opened.append(a) or {"terminal": "t9"}), \
+                mock.patch.object(core, "find_tool", side_effect=lambda n: "/bin/true" if n != "hc" or hc else None), \
+                mock.patch.object(herdr, "tether_cmd", return_value="tether"), \
+                mock.patch.object(subprocess, "run", side_effect=lambda cmd, **k: typed.append(cmd) or mock.Mock(returncode=0)), \
                 contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-            tether.continue_cmd(list(args))
+            continue_.continue_cmd(list(args))
         return opened, typed
 
     def test_continue_opens_a_new_tab_with_the_new_agent_and_leaves_the_original_alone(self):
@@ -1273,7 +1274,7 @@ class ContinueInOtherAgent(TetherTestCase):
         self.assertEqual((new["agent"], new["tab"], new["tab_name"]), ("copilot", "tab9", "one · copilot"))
         self.assertNotEqual(new["session"], SESSION)
         self.assertEqual(new["continued_from"]["session"], SESSION)
-        self.assertEqual(tether.continue_turns("copilot", tether.transcript_file("copilot", new["session"])), self.EXPECTED)
+        self.assertEqual(continue_.continue_turns("copilot", search.transcript_file("copilot", new["session"])), self.EXPECTED)
         self.assertEqual(typed, [["/bin/true", "send", "t9", "tether resume"]])
         with open(old) as f:
             self.assertEqual(f.read(), before, "the old session is not touched")
@@ -1287,7 +1288,7 @@ class ContinueInOtherAgent(TetherTestCase):
     def test_continue_works_while_the_original_agent_keeps_running(self):
         self.claude_transcript()
         self.linked()
-        with mock.patch.object(tether, "_running", return_value=True):
+        with mock.patch.object(store, "_running", return_value=True):
             self.cont("copilot")
         self.assertEqual(self.read_state()["spLIVE"]["terminals"]["t1"]["agent"], "claude")
 
@@ -1309,33 +1310,33 @@ class ContinueInOtherAgent(TetherTestCase):
         self.assertIn("already uses claude", str(ctx.exception))
 
     def test_swap_is_still_accepted_as_the_old_name_and_list_json_names_each_links_tab(self):
-        with mock.patch.object(tether, "continue_cmd") as cmd:
-            tether.main(["swap", "copilot"])
-            tether.main(["continue"])
+        with mock.patch.object(continue_, "continue_cmd") as cmd:
+            cli.main(["swap", "copilot"])
+            cli.main(["continue"])
         self.assertEqual([c.args[0] for c in cmd.call_args_list], [["copilot"], []])
         self.write_state({"spLIVE": {"name": "work", "terminals": {"t1": link(session=SESSION, tab="tab7")}}})
         out = io.StringIO()
-        with mock.patch.object(tether, "herdr_ls", return_value=[{"id": "spLIVE", "name": "work"}]), contextlib.redirect_stdout(out):
-            tether.list_json()
+        with mock.patch.object(herdr, "herdr_ls", return_value=[{"id": "spLIVE", "name": "work"}]), contextlib.redirect_stdout(out):
+            workspace.list_json()
         self.assertEqual(json.loads(out.getvalue())[0]["links"][0]["tab"], "tab7")
 
     def test_continue_from_the_tab_menu_picks_the_tabs_one_linked_terminal(self):
         self.claude_transcript()
         self.linked("t1")
         live = [{"id": "spLIVE", "name": "work", "tabs": [{"id": "tab1", "name": "one", "terminals": [{"terminal": "t1"}, {"terminal": "t2"}]}]}]
-        with mock.patch.object(tether, "ensure_app"), mock.patch.object(tether, "herdr_ls", return_value=live):
-            where = tether.terminal_in_tab("tab1")
+        with mock.patch.object(herdr, "ensure_app"), mock.patch.object(herdr, "herdr_ls", return_value=live):
+            where = herdr.terminal_in_tab("tab1")
         self.assertEqual((where.space_id, where.terminal, where.tab, where.tab_name), ("spLIVE", "t1", "tab1", "one"))
         self.linked("t1", "t2")
-        with mock.patch.object(tether, "ensure_app"), mock.patch.object(tether, "herdr_ls", return_value=live), self.assertRaises(SystemExit) as ctx:
-            tether.terminal_in_tab("tab1")
+        with mock.patch.object(herdr, "ensure_app"), mock.patch.object(herdr, "herdr_ls", return_value=live), self.assertRaises(SystemExit) as ctx:
+            herdr.terminal_in_tab("tab1")
         self.assertIn("several linked terminals", str(ctx.exception))
         self.linked("t7")
-        with mock.patch.object(tether, "ensure_app"), mock.patch.object(tether, "herdr_ls", return_value=live), self.assertRaises(SystemExit) as ctx:
-            tether.terminal_in_tab("tab1")
+        with mock.patch.object(herdr, "ensure_app"), mock.patch.object(herdr, "herdr_ls", return_value=live), self.assertRaises(SystemExit) as ctx:
+            herdr.terminal_in_tab("tab1")
         self.assertIn("no agent is linked", str(ctx.exception))
-        with mock.patch.object(tether, "ensure_app"), mock.patch.object(tether, "herdr_ls", return_value=live), self.assertRaises(SystemExit) as ctx:
-            tether.terminal_in_tab("nope")
+        with mock.patch.object(herdr, "ensure_app"), mock.patch.object(herdr, "herdr_ls", return_value=live), self.assertRaises(SystemExit) as ctx:
+            herdr.terminal_in_tab("nope")
         self.assertIn("not found", str(ctx.exception))
 
 
@@ -1352,7 +1353,7 @@ class ContextStore(TetherTestCase):
     def run_cmd(self, *args):
         out = io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
-            tether.context_cmd(list(args))
+            context.context_cmd(list(args))
         return out.getvalue()
 
     def add(self, topic="repos", fact="the orders consumer is in ~/orders", about="where repositories live"):
@@ -1361,22 +1362,22 @@ class ContextStore(TetherTestCase):
     def test_add_creates_the_topic_and_its_index_line_and_refuses_duplicates(self):
         self.assertEqual(self.add(), "added")
         self.assertEqual(self.add(fact="The orders consumer is in ~/orders."), "already there")
-        index, _ = tether.context_index(self.ctx)
+        index, _ = context.context_index(self.ctx)
         self.assertEqual(index["repos"], ("repos.md", "where repositories live"))
-        facts = tether.context_facts(self.ctx, "repos")
+        facts = context.context_facts(self.ctx, "repos")
         self.assertEqual([f[1] for f in facts], ["the orders consumer is in ~/orders"])
         self.assertRegex(facts[0][2], r"^\d{4}-\d\d-\d\d$")
 
     def test_a_new_topic_needs_a_description_and_secrets_are_refused(self):
-        with self.assertRaises(tether.TetherError) as ctx:
+        with self.assertRaises(core.TetherError) as ctx:
             self.run_cmd("add", "stack", "services use Kafka")
         self.assertIn("--about", str(ctx.exception))
         for bad in ("the api key: abc123", "password = hunter2", "deploy with " + "A1b2" * 10):
-            with self.assertRaises(tether.TetherError, msg=bad):
+            with self.assertRaises(core.TetherError, msg=bad):
                 self.add(fact=bad)
-        with self.assertRaises(tether.TetherError):
+        with self.assertRaises(core.TetherError):
             self.add(topic="Bad Topic")
-        self.assertEqual(tether.context_topics(self.ctx), [])
+        self.assertEqual(context.context_topics(self.ctx), [])
 
     def test_find_matches_all_words_in_facts_and_topic_descriptions_without_a_model(self):
         self.add()
@@ -1396,7 +1397,7 @@ class ContextStore(TetherTestCase):
         self.assertIn("work-tools: where tickets and projects live", out, "with no hit, the topics are listed so the agent can pick one")
 
     def kinds(self):
-        return sorted({i["kind"] for i in tether.context_check_issues(self.ctx)})
+        return sorted({i["kind"] for i in context.context_check_issues(self.ctx)})
 
     def test_check_reports_what_is_wrong_and_nothing_when_all_is_well(self):
         self.add()
@@ -1412,9 +1413,9 @@ class ContextStore(TetherTestCase):
     def test_check_flags_long_files(self):
         self.add()
         with open(os.path.join(self.ctx, "repos.md"), "a") as f:
-            f.writelines(f"- fact number {n}\n" for n in range(tether.CONTEXT_TOPIC_MAX + 1))
+            f.writelines(f"- fact number {n}\n" for n in range(context.CONTEXT_TOPIC_MAX + 1))
         with open(os.path.join(self.ctx, "index.md"), "a") as f:
-            f.writelines(f"- [t{n}](t{n}.md) — x\n" for n in range(tether.CONTEXT_INDEX_MAX))
+            f.writelines(f"- [t{n}](t{n}.md) — x\n" for n in range(context.CONTEXT_INDEX_MAX))
         self.assertIn("topic-long", self.kinds())
         self.assertIn("index-long", self.kinds())
 
@@ -1428,10 +1429,10 @@ class ContextStore(TetherTestCase):
             f.write("- [gone](gone.md) — deleted\n")
         out = self.run_cmd("check", "--fix")
         self.assertIn("fixed:", out)
-        index, _ = tether.context_index(self.ctx)
+        index, _ = context.context_index(self.ctx)
         self.assertIn("orphan", index)
         self.assertNotIn("gone", index)
-        self.assertEqual(len(tether.context_facts(self.ctx, "repos")), 2, "the duplicate is gone, the other facts stay")
+        self.assertEqual(len(context.context_facts(self.ctx, "repos")), 2, "the duplicate is gone, the other facts stay")
         self.assertEqual(self.kinds(), ["link-dead"], "a dead link is reported, never edited away")
         backups = os.listdir(os.path.join(self.ctx, ".backup"))
         self.assertEqual(len(backups), 1)
@@ -1439,30 +1440,30 @@ class ContextStore(TetherTestCase):
             self.assertEqual(f.read().count("the orders consumer"), 2, "the backup is the store as it was")
 
     def test_the_background_check_runs_at_most_once_a_day_and_only_with_a_store(self):
-        with mock.patch.object(tether.subprocess, "Popen") as popen:
-            tether.context_check_if_due()
+        with mock.patch.object(subprocess, "Popen") as popen:
+            context.context_check_if_due()
             popen.assert_not_called()
             self.add()
-            tether.context_check_if_due()
-            tether.context_check_if_due()
+            context.context_check_if_due()
+            context.context_check_if_due()
             self.assertEqual(popen.call_count, 1, "the second launch within a day does nothing")
             self.assertEqual(popen.call_args.args[0][-3:], ["check", "--background", "--fix"])
             old = os.path.join(self.ctx, ".last-check")
             os.utime(old, (0, 0))
-            tether.context_check_if_due()
+            context.context_check_if_due()
             self.assertEqual(popen.call_count, 2)
 
     def test_a_background_check_leaves_a_report_and_a_hint_is_shown_once(self):
         self.add()
         with open(os.path.join(self.ctx, "repos.md"), "a") as f:
             f.write("- see [[missing]]\n")
-        tether.context_check(["--background"])
+        context.context_check(["--background"])
         with open(os.path.join(self.ctx, ".report.json")) as f:
             self.assertEqual(json.load(f)["issues"][0]["kind"], "link-dead")
         err = io.StringIO()
         with contextlib.redirect_stderr(err):
-            tether.context_hint()
-            tether.context_hint()
+            context.context_hint()
+            context.context_hint()
         self.assertEqual(err.getvalue().count("thing(s) to look at"), 1)
 
     def test_learn_proposes_facts_and_accept_saves_only_the_chosen_ones(self):
@@ -1474,17 +1475,17 @@ class ContextStore(TetherTestCase):
             {"topic": "newtopic", "fact": "has no description"},
             {"topic": "repos", "fact": "the orders consumer is in ~/orders"}])
         docs = [{"space_id": "s1", "space": "Work", "state": "open", "agent": "claude", "session": "x", "path": "/none"}]
-        with mock.patch.object(tether, "find_conversations", return_value=docs), \
-                mock.patch.object(tether, "conversation_text", return_value=("USER: hi", 1, 0)), \
-                mock.patch.object(tether, "ask_claude", return_value=(proposal, 0.04)) as ask:
+        with mock.patch.object(reading, "find_conversations", return_value=docs), \
+                mock.patch.object(reading, "conversation_text", return_value=("USER: hi", 1, 0)), \
+                mock.patch.object(ai, "ask_claude", return_value=(proposal, 0.04)) as ask:
             out = self.run_cmd("learn", "Work")
         self.assertIn("2 fact(s) proposed", out)
         self.assertIn("nothing is saved yet", out)
         self.assertIn("repos: where repositories live", ask.call_args.args[0])
-        self.assertEqual(len(tether.context_facts(self.ctx, "repos")), 1, "nothing saved by learn")
+        self.assertEqual(len(context.context_facts(self.ctx, "repos")), 1, "nothing saved by learn")
         self.run_cmd("accept", "--only", "2")
-        self.assertEqual([f[1] for f in tether.context_facts(self.ctx, "stack")], ["builds use Gradle"])
-        self.assertEqual(len(tether.context_facts(self.ctx, "repos")), 1)
+        self.assertEqual([f[1] for f in context.context_facts(self.ctx, "stack")], ["builds use Gradle"])
+        self.assertEqual(len(context.context_facts(self.ctx, "repos")), 1)
         self.assertIn("discarded 1", self.run_cmd("reject"))
         self.assertFalse(os.path.exists(os.path.join(self.ctx, ".proposals.json")))
 
@@ -1517,11 +1518,11 @@ class ContextLearning(TetherTestCase):
             return reply, 0.02
 
         with mock.patch.dict(os.environ, {"TETHER_CONTEXT_AUTO": "1" if auto else "0"}), \
-                mock.patch.object(tether, "search_corpus", return_value=self.transcripts), \
-                mock.patch.object(tether, "conversation_text", side_effect=lambda agent, path, cap=0, as_lines=False: self.lines[path]), \
-                mock.patch.object(tether, "ask_claude", side_effect=fake_ask), \
+                mock.patch.object(search, "search_corpus", return_value=self.transcripts), \
+                mock.patch.object(reading, "conversation_text", side_effect=lambda agent, path, cap=0, as_lines=False: self.lines[path]), \
+                mock.patch.object(ai, "ask_claude", side_effect=fake_ask), \
                 contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-            tether.context_harvest([])
+            context.context_harvest([])
         return calls
 
     def grow(self, n=8, which=None):
@@ -1529,13 +1530,13 @@ class ContextLearning(TetherTestCase):
             self.lines[t["path"]] = self.lines[t["path"]] + [f"USER: more {i}" for i in range(n)]
 
     def queue(self):
-        return tether.context_queue(self.ctx)
+        return context.context_queue(self.ctx)
 
     def test_it_is_off_by_default(self):
         self.assertEqual(self.harvest(auto=False), [])
         self.assertFalse(os.path.exists(os.path.join(self.ctx, ".harvested.json")))
-        with mock.patch.object(tether.subprocess, "Popen") as popen:
-            tether.context_harvest_if_due()
+        with mock.patch.object(subprocess, "Popen") as popen:
+            context.context_harvest_if_due()
         popen.assert_not_called()
 
     def test_turning_it_on_starts_from_now_without_reading_history(self):
@@ -1548,18 +1549,18 @@ class ContextLearning(TetherTestCase):
         self.harvest()
         self.grow()
         calls = self.harvest()
-        self.assertEqual(len(calls), tether.CONTEXT_HARVEST_MAX, "at most three conversations per run")
+        self.assertEqual(len(calls), context.CONTEXT_HARVEST_MAX, "at most three conversations per run")
         self.assertEqual(calls[0][1], "haiku")
         self.assertIn("more 0", calls[0][0])
         self.assertNotIn("message 0", calls[0][0], "only what is new since the last read is sent")
         self.assertEqual(len(self.queue()), 1, "the same fact proposed again is not queued twice")
-        self.assertEqual(tether.context_topics(self.ctx), [], "nothing is saved by background learning")
+        self.assertEqual(context.context_topics(self.ctx), [], "nothing is saved by background learning")
         self.assertEqual(len(self.harvest()), 1, "the fourth conversation is read on the next run")
         self.assertEqual(self.harvest(), [], "and then nothing is left to read")
 
     def test_a_conversation_is_not_read_again_until_it_has_grown_enough_or_while_it_is_active(self):
         self.harvest()
-        self.grow(n=tether.CONTEXT_HARVEST_MIN_NEW - 1, which=self.transcripts[:1])
+        self.grow(n=context.CONTEXT_HARVEST_MIN_NEW - 1, which=self.transcripts[:1])
         self.assertEqual(self.harvest(), [])
         self.grow(n=2, which=self.transcripts[:1])
         os.utime(self.transcripts[0]["path"], None)  # written just now: still in use
@@ -1571,22 +1572,22 @@ class ContextLearning(TetherTestCase):
         self.harvest()
         os.makedirs(self.ctx, exist_ok=True)
         with open(os.path.join(self.ctx, ".harvest-spend.json"), "w") as f:
-            json.dump({"date": tether.datetime.now().date().isoformat(), "usd": tether.CONTEXT_HARVEST_CAP_USD}, f)
+            json.dump({"date": datetime.now().date().isoformat(), "usd": context.CONTEXT_HARVEST_CAP_USD}, f)
         self.grow()
         self.assertEqual(self.harvest(), [])
 
     def test_a_failed_model_call_stops_the_run_without_marking_conversations_as_read(self):
         self.harvest()
         self.grow()
-        with mock.patch.dict(os.environ, {"TETHER_CONTEXT_AUTO": "1"}), mock.patch.object(tether, "search_corpus", return_value=self.transcripts), \
-                mock.patch.object(tether, "conversation_text", side_effect=lambda a, p, cap=0, as_lines=False: self.lines[p]), \
-                mock.patch.object(tether, "ask_claude", side_effect=tether.TetherError("no claude")), \
+        with mock.patch.dict(os.environ, {"TETHER_CONTEXT_AUTO": "1"}), mock.patch.object(search, "search_corpus", return_value=self.transcripts), \
+                mock.patch.object(reading, "conversation_text", side_effect=lambda a, p, cap=0, as_lines=False: self.lines[p]), \
+                mock.patch.object(ai, "ask_claude", side_effect=core.TetherError("no claude")), \
                 contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-            tether.context_harvest([])
-        self.assertEqual(len(self.harvest()), tether.CONTEXT_HARVEST_MAX, "still unread, so the next run tries again")
+            context.context_harvest([])
+        self.assertEqual(len(self.harvest()), context.CONTEXT_HARVEST_MAX, "still unread, so the next run tries again")
 
     def test_auto_accept_saves_only_plain_facts_about_existing_topics_and_can_be_undone(self):
-        tether.add_fact(self.ctx, "repos", "the api is in ~/api", about="where repos live")
+        context.add_fact(self.ctx, "repos", "the api is in ~/api", about="where repos live")
         reply = json.dumps([
             {"topic": "repos", "fact": "the billing service is in ~/billing"},
             {"topic": "repos", "fact": "deploy with `make ship`"},
@@ -1597,75 +1598,75 @@ class ContextLearning(TetherTestCase):
         self.grow()
         with mock.patch.dict(os.environ, {"TETHER_CONTEXT_AUTO_ACCEPT": "1"}):
             self.harvest(reply=reply)
-        self.assertEqual([f[1] for f in tether.context_facts(self.ctx, "repos")], ["the api is in ~/api", "the billing service is in ~/billing"])
+        self.assertEqual([f[1] for f in context.context_facts(self.ctx, "repos")], ["the api is in ~/api", "the billing service is in ~/billing"])
         self.assertEqual(sorted(op["fact"] for op in self.queue()), ["deploy with `make ship`", "docs live at https://example.com/docs", "we use ripgrep"],
                          "commands, links and new topics still wait for review")
-        self.assertIn("auto: ", tether.context_facts(self.ctx, "repos")[1][3])
-        log = tether.context_auto_added(self.ctx)
+        self.assertIn("auto: ", context.context_facts(self.ctx, "repos")[1][3])
+        log = context.context_auto_added(self.ctx)
         self.assertEqual([e["fact"] for e in log], ["the billing service is in ~/billing"])
         with contextlib.redirect_stdout(io.StringIO()):
-            tether.context_undo(["--only", "1"])
-        self.assertEqual([f[1] for f in tether.context_facts(self.ctx, "repos")], ["the api is in ~/api"])
-        self.assertEqual(tether.context_auto_added(self.ctx), [])
+            context.context_undo(["--only", "1"])
+        self.assertEqual([f[1] for f in context.context_facts(self.ctx, "repos")], ["the api is in ~/api"])
+        self.assertEqual(context.context_auto_added(self.ctx), [])
 
     def test_list_json_and_remove_give_the_window_what_it_needs(self):
-        tether.add_fact(self.ctx, "repos", "the api is in ~/api", source="Space 1", about="where repos live")
-        tether.add_fact(self.ctx, "repos", "the web app is in ~/web", source="auto: Space 2")
+        context.add_fact(self.ctx, "repos", "the api is in ~/api", source="Space 1", about="where repos live")
+        context.add_fact(self.ctx, "repos", "the web app is in ~/web", source="auto: Space 2")
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
-            tether.context_list(["--json"])
+            context.context_list(["--json"])
         topics = json.loads(out.getvalue())
         self.assertEqual([(t["topic"], t["about"]) for t in topics], [("repos", "where repos live")])
         self.assertEqual([(f["fact"], f["auto"]) for f in topics[0]["facts"]], [("the api is in ~/api", False), ("the web app is in ~/web", True)])
         with contextlib.redirect_stdout(io.StringIO()):
-            tether.context_remove(["repos", "--line", str(topics[0]["facts"][1]["line"])])
-        self.assertEqual([f[1] for f in tether.context_facts(self.ctx, "repos")], ["the api is in ~/api"])
+            context.context_remove(["repos", "--line", str(topics[0]["facts"][1]["line"])])
+        self.assertEqual([f[1] for f in context.context_facts(self.ctx, "repos")], ["the api is in ~/api"])
         with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
-            tether.context_remove(["repos", "--line", "1"])  # the title line is not a fact
+            context.context_remove(["repos", "--line", "1"])  # the title line is not a fact
 
     def test_without_auto_accept_everything_is_queued(self):
-        tether.add_fact(self.ctx, "repos", "the api is in ~/api", about="where repos live")
+        context.add_fact(self.ctx, "repos", "the api is in ~/api", about="where repos live")
         self.harvest()
         self.grow()
         self.harvest(reply='[{"topic": "repos", "fact": "the billing service is in ~/billing"}]')
-        self.assertEqual(len(tether.context_facts(self.ctx, "repos")), 1)
+        self.assertEqual(len(context.context_facts(self.ctx, "repos")), 1)
         self.assertEqual(len(self.queue()), 1)
 
     def test_the_background_job_is_started_at_most_every_six_hours_when_on(self):
-        with mock.patch.dict(os.environ, {"TETHER_CONTEXT_AUTO": "1"}), mock.patch.object(tether.subprocess, "Popen") as popen:
-            tether.context_harvest_if_due()
-            tether.context_harvest_if_due()
+        with mock.patch.dict(os.environ, {"TETHER_CONTEXT_AUTO": "1"}), mock.patch.object(subprocess, "Popen") as popen:
+            context.context_harvest_if_due()
+            context.context_harvest_if_due()
             self.assertEqual(popen.call_count, 1)
             self.assertEqual(popen.call_args.args[0][-2:], ["harvest", "--background"])
             os.utime(os.path.join(self.ctx, ".last-harvest"), (0, 0))
-            tether.context_harvest_if_due()
+            context.context_harvest_if_due()
             self.assertEqual(popen.call_count, 2)
 
     def test_proposals_are_listed_for_the_ui_and_decided_by_number(self):
         os.makedirs(self.ctx)
-        tether.add_fact(self.ctx, "repos", "the orders consumer is in ~/orders", about="where repos live")
-        tether.context_queue_save(self.ctx, [
+        context.add_fact(self.ctx, "repos", "the orders consumer is in ~/orders", about="where repos live")
+        context.context_queue_save(self.ctx, [
             {"topic": "repos", "fact": "the billing service is in ~/billing", "about": "", "source": "chat"},
             {"topic": "tools", "fact": "builds use Gradle", "about": "build tools", "source": "chat"}])
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
-            tether.context_proposals(["--json"])
+            context.context_proposals(["--json"])
         rows = json.loads(out.getvalue())
         self.assertEqual([(r["n"], r["topic"], r["new_topic"]) for r in rows], [(1, "repos", False), (2, "tools", True)])
         with contextlib.redirect_stdout(io.StringIO()):
-            tether.context_decide(["--only", "2"], True)
-        self.assertEqual([f[1] for f in tether.context_facts(self.ctx, "tools")], ["builds use Gradle"])
+            context.context_decide(["--only", "2"], True)
+        self.assertEqual([f[1] for f in context.context_facts(self.ctx, "tools")], ["builds use Gradle"])
         self.assertEqual([op["fact"] for op in self.queue()], ["the billing service is in ~/billing"])
         with contextlib.redirect_stdout(io.StringIO()):
-            tether.context_decide([], False)
+            context.context_decide([], False)
         self.assertEqual(self.queue(), [])
 
     def test_the_hint_mentions_waiting_proposals(self):
         os.makedirs(self.ctx)
-        tether.context_queue_save(self.ctx, [{"topic": "repos", "fact": "x is in ~/x", "about": "a", "source": ""}])
+        context.context_queue_save(self.ctx, [{"topic": "repos", "fact": "x is in ~/x", "about": "a", "source": ""}])
         err = io.StringIO()
         with contextlib.redirect_stderr(err):
-            tether.context_hint()
+            context.context_hint()
         self.assertIn("1 proposed fact(s) to review", err.getvalue())
 
 
@@ -1688,7 +1689,7 @@ class Settings(TetherTestCase):
     def cfg(self, *args):
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
-            tether.config_cmd(list(args))
+            settings.config_cmd(list(args))
         return out.getvalue()
 
     def rows(self):
@@ -1696,7 +1697,7 @@ class Settings(TetherTestCase):
 
     def test_every_setting_is_listed_with_its_default_and_where_the_value_comes_from(self):
         rows = self.rows()
-        self.assertEqual([r["key"] for r in tether.SETTINGS], list(rows))
+        self.assertEqual([r["key"] for r in settings.SETTINGS], list(rows))
         self.assertEqual((rows["auto"]["value"], rows["auto"]["source"]), (False, "default"))
         self.assertEqual((rows["default_agent"]["value"], rows["context_model"]["value"], rows["search_model"]["value"]), ("claude", "haiku", "sonnet"))
         self.assertEqual(rows["context_agent"]["value"], "claude")
@@ -1710,12 +1711,12 @@ class Settings(TetherTestCase):
         rows = self.rows()
         self.assertEqual([(rows[k]["value"], rows[k]["source"]) for k in ("auto", "default_agent", "context_model")],
                          [(True, "config"), ("copilot", "config"), ("sonnet", "config")])
-        self.assertEqual(tether.default_agent(), "copilot")
+        self.assertEqual(settings.default_agent(), "copilot")
         self.assertEqual(self.cfg("get", "default_agent").strip(), "copilot")
         self.cfg("set", "default_agent", "default")
         self.assertEqual(self.rows()["default_agent"]["source"], "default")
         for bad in (("auto", "maybe"), ("default_agent", "pi"), ("nothing", "x"), ("home_dir", "/no/such/folder"), ("home_dir", os.path.expanduser("~"))):
-            with self.assertRaises((tether.TetherError, SystemExit), msg=str(bad)):
+            with self.assertRaises((core.TetherError, SystemExit), msg=str(bad)):
                 self.cfg("set", *bad)
 
     def test_an_environment_variable_wins_and_is_reported_as_the_source(self):
@@ -1734,7 +1735,7 @@ class Settings(TetherTestCase):
         self.assertEqual(self.rows()["home_dir"]["value"], folder)
         with open(os.path.join(self.dir, "config.json"), "w") as f:
             json.dump({"default_agent": "bogus"}, f)
-        self.assertEqual(tether.default_agent(), "claude")
+        self.assertEqual(settings.default_agent(), "claude")
 
 
 class ReadAnotherConversation(TetherTestCase):
@@ -1750,8 +1751,8 @@ class ReadAnotherConversation(TetherTestCase):
     def run_read(self, path, *args):
         docs = [{"space_id": "s1", "space": "Grafana", "state": "open", "agent": "claude", "session": "abcdef123456", "path": path}]
         out = io.StringIO()
-        with mock.patch.object(tether, "search_corpus", return_value=docs), contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
-            tether.read_cmd(["grafana", *args])
+        with mock.patch.object(search, "search_corpus", return_value=docs), contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            reading.read_cmd(["grafana", *args])
         return out.getvalue()
 
     def test_prints_the_last_messages_and_never_tool_output(self):

@@ -7,7 +7,7 @@
 #
 # Normally run through get.sh (the curl one-liner in the README), which downloads a release, checks its
 # checksum and runs this script from the unpacked folder (TETHER_SRC). It also works from a git clone.
-# Overrides (mostly for testing): HERDR_DIR, BIN_DIR, SKILL_ROOT, AGENTS_SKILLS, BACKUP_DIR (where THIS script
+# Overrides (mostly for testing): HERDR_DIR, BIN_DIR, LIB_DIR, SKILL_ROOT, AGENTS_SKILLS, BACKUP_DIR (where THIS script
 # keeps copies of what it replaces), TETHER_STATE_DIR, HERDR_ALLOW_RUNNING=1, INSTALL_HERDR=yes,
 # TETHER_AUTO_BACKUP=yes|no, CLAUDE_RETENTION_DAYS=<days>.
 set -euo pipefail
@@ -15,6 +15,7 @@ set -euo pipefail
 HERE="${TETHER_SRC:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)}"
 HERDR_DIR="${HERDR_DIR:-$HOME/.config/herdr-app}"
 BIN_DIR="${BIN_DIR:-$HOME/.local/bin}"
+LIB_DIR="${LIB_DIR:-$HOME/.local/lib}"   # the tetherlib package, next to bin/: the tool finds it as ../lib
 SKILL_ROOT="${SKILL_ROOT:-$HOME/.claude/skills}"
 AGENTS_SKILLS="${AGENTS_SKILLS:-$HOME/.agents/skills}"   # where Copilot CLI looks for personal skills
 STATE_DIR="${TETHER_STATE_DIR:-$HOME/.local/state/tether}"
@@ -67,7 +68,7 @@ fi
 backup() {
   local target="$1"
   [ -e "$target" ] || return 0
-  [ -n "${2:-}" ] && diff -rq "$2" "$target" >/dev/null 2>&1 && return 0
+  [ -n "${2:-}" ] && diff -rq -x __pycache__ "$2" "$target" >/dev/null 2>&1 && return 0
   local rel="${target#"$HOME"/}"
   mkdir -p "$BACKUP_DIR/$(dirname "$rel")"
   [ -e "$BACKUP_DIR/$rel" ] || cp -R "$target" "$BACKUP_DIR/$rel"
@@ -118,11 +119,12 @@ if [ "$MODE" = uninstall ]; then
   backup "$HERDR_DIR/layouts/$LAYOUT_NAME.json"; rm -f "$HERDR_DIR/layouts/$LAYOUT_NAME.json"
   for m in ${mods[@]+"${mods[@]}"}; do backup "$HERDR_DIR/mods/$m"; rm -rf "$HERDR_DIR/mods/$m"; done
   backup "$BIN_DIR/tether"; rm -f "$BIN_DIR/tether"
+  backup "$LIB_DIR/tetherlib"; rm -rf "${LIB_DIR:?}/tetherlib"
   for skill in tether tether-context; do
     backup "$SKILL_ROOT/$skill"; rm -rf "${SKILL_ROOT:?}/$skill"
     if [ -L "$AGENTS_SKILLS/$skill" ]; then rm -f "$AGENTS_SKILLS/$skill"; fi
   done
-  echo "Removed: $BIN_DIR/tether, the skills, ${#mods[@]} mod(s) and the layout (copies are in $BACKUP_DIR)."
+  echo "Removed: $BIN_DIR/tether, $LIB_DIR/tetherlib, the skills, ${#mods[@]} mod(s) and the layout (copies are in $BACKUP_DIR)."
   echo "Kept: your space links ($STATE_DIR) and conversation backups (~/.local/share/tether/backups)."
   echo "Delete them too only if you will not use tether again: rm -rf \"$STATE_DIR\" ~/.local/share/tether"
   echo "If you let the installer set cleanupPeriodDays in ~/.claude/settings.json, that setting stays."
@@ -130,7 +132,7 @@ if [ "$MODE" = uninstall ]; then
 fi
 
 # ---------------------------------------------------------------------------------------- install
-for f in bin/tether skill/SKILL.md herdr/layouts/$LAYOUT_NAME.json; do
+for f in bin/tether lib/tetherlib/cli.py skill/SKILL.md herdr/layouts/$LAYOUT_NAME.json; do
   [ -f "$HERE/$f" ] || die "$HERE/$f not found. Run this from the tether download (or a clone), or use get.sh."
 done
 VERSION="$(cat "$HERE/VERSION" 2>/dev/null || echo unknown)"
@@ -169,8 +171,14 @@ else
   warn "Herdr $HERDR_VERSION is older than $HERDR_MIN, which the tether mods are based on; they may not load. Update Herdr first."
 fi
 
-say "tether $VERSION -> $BIN_DIR"
-mkdir -p "$BIN_DIR"
+say "tether $VERSION -> $BIN_DIR (the code is the tetherlib package in $LIB_DIR/tetherlib)"
+mkdir -p "$BIN_DIR" "$LIB_DIR"
+# The package first, so the new entry point never runs against the old modules. It is replaced whole: a module that was renamed or
+# removed must not stay behind.
+backup "$LIB_DIR/tetherlib" "$HERE/lib/tetherlib"
+rm -rf "${LIB_DIR:?}/tetherlib"
+cp -R "$HERE/lib/tetherlib" "$LIB_DIR/tetherlib"
+find "$LIB_DIR/tetherlib" -name __pycache__ -type d -prune -exec rm -rf {} +
 backup "$BIN_DIR/tether" "$HERE/bin/tether"
 cp "$HERE/bin/tether" "$BIN_DIR/tether"
 chmod +x "$BIN_DIR/tether"

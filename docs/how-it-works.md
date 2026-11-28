@@ -21,10 +21,39 @@ Herdr app ── mods (JS) ──exec──▶ tether (Python) ──▶ herdr-a
                                            session runs in which terminal)
 ```
 
-- **`bin/tether`** does all the work; the mods only call it. The mods call `tether` by absolute path
+- **`tether`** (the `tetherlib` package behind `bin/tether`) does all the work; the mods only call it. The mods call `tether` by absolute path
   (`~/.local/bin/tether`) because the Herdr app runs with a minimal `PATH`.
 - **Where am I?** `$HC_TERMINAL_ID` plus `herdr-app ls` gives the space id, tab and terminal. Outside Herdr
   the agent commands simply start the plain agent; tether never blocks you from running the agent.
+
+## The code
+
+`bin/tether` is only an entry point; the tool is the standard-library-only package `lib/tetherlib`, one module per area:
+
+| Module | Holds |
+|---|---|
+| `core` | constants, `TetherError`, `env`/`say`, `config.json`, option parsing, the terminal `pick` menu |
+| `herdr` | everything that talks to the Herdr app: spaces, terminals, commands |
+| `store` | the links (`State`, `spaces.json`) and finding agent sessions and processes on this machine |
+| `launch` | starting an agent here; `link`, `status`, `reset`, `touch` |
+| `workspace` | list, open, fork, create and delete spaces; the menu |
+| `ai` | the headless Claude / Copilot calls behind search and learning |
+| `search`, `reading`, `continue_` | search; `tether read`; continue in the other agent |
+| `context` | the fact store, proposals, background learning |
+| `settings` | the settings registry and `tether config` |
+| `backups` | backup, restore, export, import, undelete |
+| `doctor` | `tether doctor` |
+| `cli` | `main()`: the command table, and the `--help` text |
+
+Three rules keep it workable:
+
+- **Modules call each other by module name**: `herdr.herdr_ls()`, never `from herdr import herdr_ls`. The few exceptions are stable helpers
+  from `core` (`env`, `say`, `TetherError`, `AGENTS`, …). Because of this, a test patches the module that *defines* a name
+  (`mock.patch.object(herdr, "herdr_ls")`) and every caller sees it.
+- **A local variable never takes a module's name** (`store`, `workspace`, `backups`, …): it would hide the module and fail only when that path
+  runs. `tests/test_modules.py` checks this, that every module imports on its own, and that no code uses a name nothing defines.
+- **A new command** is a function in the module of its area, one branch in `cli.main`, and a line in `--help` (the docs test fails until it is
+  documented).
 
 ## What gets installed
 
@@ -32,7 +61,8 @@ Herdr app ── mods (JS) ──exec──▶ tether (Python) ──▶ herdr-a
 
 | Installed file | From | Used by |
 |---|---|---|
-| `~/.local/bin/tether` | `bin/tether` | you, the mods, the skill |
+| `~/.local/bin/tether` | `bin/tether` | you, the mods, the skill: a small entry point that adds `../lib` to the path and runs `tetherlib.cli` |
+| `~/.local/lib/tetherlib/` | `lib/tetherlib/` | the code. Replaced whole on every install, so a renamed module cannot linger |
 | `~/.claude/skills/tether/SKILL.md` | `skill/SKILL.md` | Claude Code; `~/.agents/skills/tether` is a link to the same folder, for Copilot CLI |
 | `~/.config/herdr-app/mods/tether-*/` | `herdr/mods/*` | Herdr |
 | `~/.config/herdr-app/layouts/tether.json` | `herdr/layouts/tether.json` | Herdr (`"layout": "tether"` in `shared.json`) |
@@ -187,7 +217,7 @@ running: only a snapshot of its transcript is read.
 
 ## Settings
 
-`SETTINGS` in `bin/tether` is the one list of what `config.json` can hold: key, group, label, help, type (`bool`, `choice`, `path`),
+`SETTINGS` in `lib/tetherlib/settings.py` is the one list of what `config.json` can hold: key, group, label, help, type (`bool`, `choice`, `path`),
 choices, default, and the environment variable that overrides it. `config_rows` resolves each to its effective value with the
 same functions the rest of the tool uses (`context_auto_on`, `search_model`, `default_agent`, `home_dir_setting`, `backup_dir`,
 `context_dir`), and a **source**: `env` if the `TETHER_*` variable is set, `config` if the key is in `config.json`, else `default`.
@@ -344,7 +374,8 @@ only while the shipped pieces they point at still exist.
 
 | Path | Installs to | What it is |
 |---|---|---|
-| `bin/tether` | `~/.local/bin/tether` | The tool. Python 3, stdlib only. Manual: `docs/tether-help.txt` |
+| `bin/tether` | `~/.local/bin/tether` | The entry point (a dozen lines). Manual: `docs/tether-help.txt` |
+| `lib/tetherlib/` | `~/.local/lib/tetherlib/` | The tool: a Python 3 package, standard library only. See *The code* above |
 | `skill/SKILL.md` | `~/.claude/skills/tether/` | Claude Code skill, so an agent can run `tether link/status/...` |
 | `skill-context/SKILL.md` | `~/.claude/skills/tether-context/` | Skill that tells agents how to look up and remember facts with `tether context` |
 | `herdr/mods/tether-spaces` | `~/.config/herdr-app/mods/` | Clone of Herdr's `spaces` mod: the sidebar list, a "+" that starts a tether Claude space, a history button, a backups button, and `touch` on every space switch |
