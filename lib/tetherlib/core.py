@@ -9,7 +9,7 @@ from datetime import datetime
 from datetime import timezone
 
 
-__version__ = "0.5.0"  # keep in step with the VERSION file (tests check it)
+__version__ = "0.5.1"  # keep in step with the VERSION file (tests check it)
 
 AGENTS = ("claude", "copilot")
 

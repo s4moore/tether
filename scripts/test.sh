@@ -4,7 +4,7 @@
 # argument counts). The mod steps need herdr-app and are skipped without it. Set TSC=/path/to/tsc if `tsc`
 # is not on PATH.
 set -uo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 fail=0
 step() { echo "==> $*"; }
 

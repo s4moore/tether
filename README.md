@@ -23,7 +23,7 @@ curl -fsSL https://raw.githubusercontent.com/s4moore/tether/main/get.sh | sh
 ```
 
 Quit Herdr first. The script downloads the release, **checks it against the published SHA-256**, and runs the installer. For a specific
-version: `curl -fsSL .../get.sh | TETHER_VERSION=0.5.0 sh`.
+version: `curl -fsSL .../get.sh | TETHER_VERSION=0.5.1 sh`.
 
 **Rather read it first?** Piping a script into a shell asks you to trust it. Read [`get.sh`](get.sh) and `install.sh`, or:
 
@@ -43,7 +43,8 @@ only touches the files [listed here](docs/install.md#what-the-installer-changes)
 mod does not load. Upgrade: quit Herdr and run the same line again. Uninstall: `curl -fsSL .../get.sh | sh -s -- --uninstall`
 (your links and backups are kept).
 
-**Tested with** Herdr 0.1.16, macOS, Python 3.9, Claude Code 2.1.
+**Developed and tried with** Herdr 0.1.16 to 0.1.18, macOS, Python 3.9, Claude Code 2.1. tether does not compare version numbers: the
+installer asks your Herdr whether each mod loads, and `tether doctor` checks that Herdr offers the commands tether uses.
 
 ## First steps
 

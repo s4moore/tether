@@ -42,7 +42,7 @@ Herdr app ── mods (JS) ──exec──▶ tether (Python) ──▶ herdr-a
 | `context` | the fact store, proposals, background learning |
 | `settings` | the settings registry and `tether config` |
 | `backups` | backup, restore, export, import, undelete |
-| `doctor` | `tether doctor` |
+| `doctor` | `tether doctor`, including whether Herdr offers the commands and `ls` fields tether uses (`herdr.contract_problems`: no version comparison) |
 | `usage` | the local usage log (`record`, `tether stats`): counts, timings and outcomes only; `record` drops any field that is not a number, a boolean or a short token |
 | `cli` | `main()`: the command table, and the `--help` text |
 
@@ -64,7 +64,7 @@ Three rules keep it workable:
 |---|---|---|
 | `~/.local/bin/tether` | `bin/tether` | you, the mods, the skill: a small entry point that adds `../lib` to the path and runs `tetherlib.cli` |
 | `~/.local/lib/tetherlib/` | `lib/tetherlib/` | the code. Replaced whole on every install, so a renamed module cannot linger |
-| `~/.claude/skills/tether/SKILL.md` | `skill/SKILL.md` | Claude Code; `~/.agents/skills/tether` is a link to the same folder, for Copilot CLI |
+| `~/.claude/skills/tether/SKILL.md` | `skills/tether/SKILL.md` | Claude Code; `~/.agents/skills/tether` is a link to the same folder, for Copilot CLI |
 | `~/.config/herdr-app/mods/tether-*/` | `herdr/mods/*` | Herdr |
 | `~/.config/herdr-app/layouts/tether.json` | `herdr/layouts/tether.json` | Herdr (`"layout": "tether"` in `shared.json`) |
 | `~/.local/state/tether/` | created at run time | the links (`spaces.json`) and `config.json` |
@@ -370,7 +370,7 @@ only while the shipped pieces they point at still exist.
 - **Mods opened by the clones:** `menu` (right-click on a tab, from `tether-tabs`) and `worktree` (the New / Open / Remove worktree items in `tether-menu`).
 - **Assets:** `mods/workspace-chrome/{archive,branch,clock,plus,search,spinner}.svg`, `mods/pane/close.svg`, `icons/shell.svg`.
 
-`herdr-app check <mod>` validates a mod; `./sync.sh upstream` diffs each clone against the shipped original after a Herdr upgrade.
+`herdr-app check <mod>` validates a mod; `scripts/herdr-drift.sh` diffs each clone against the shipped original after a Herdr upgrade.
 
 ## What is in this repository
 
@@ -378,8 +378,8 @@ only while the shipped pieces they point at still exist.
 |---|---|---|
 | `bin/tether` | `~/.local/bin/tether` | The entry point (a dozen lines). Manual: `docs/tether-help.txt` |
 | `lib/tetherlib/` | `~/.local/lib/tetherlib/` | The tool: a Python 3 package, standard library only. See *The code* above |
-| `skill/SKILL.md` | `~/.claude/skills/tether/` | Claude Code skill, so an agent can run `tether link/status/...` |
-| `skill-context/SKILL.md` | `~/.claude/skills/tether-context/` | Skill that tells agents how to look up and remember facts with `tether context` |
+| `skills/tether/SKILL.md` | `~/.claude/skills/tether/` | Claude Code skill, so an agent can run `tether link/status/...` |
+| `skills/tether-context/SKILL.md` | `~/.claude/skills/tether-context/` | Skill that tells agents how to look up and remember facts with `tether context` |
 | `herdr/mods/tether-spaces` | `~/.config/herdr-app/mods/` | Clone of Herdr's `spaces` mod: the sidebar list, a "+" that starts a tether Claude space, a history button, a backups button, and `touch` on every space switch |
 | `herdr/mods/tether-new-space` | same | Name dialog for a new space; runs `tether claude` in it |
 | `herdr/mods/tether-history` | same | Closed spaces tether still has sessions for; click to reopen |
@@ -392,10 +392,10 @@ only while the shipped pieces they point at still exist.
 | `herdr/mods/tether-backups` | same | New: the Backups popup (status, Back up all, Restore, Import) and the per-space Export dialog |
 | `herdr/layouts/tether.json` | `.../layouts/` | Clone of the `main` layout that uses `tether-spaces` |
 | `install.sh`, `get.sh` | | The installer (also `--uninstall`), and the bootstrap behind the one-line install |
-| `sync.sh`, `release.sh` | | For maintainers: keep this repo and a machine in step; build a release |
+| `scripts/` | | For maintainers: `test.sh` (everything checkable without a screen), `gen-help.sh` (regenerate the help text), `herdr-drift.sh` (what a Herdr upgrade changed under the cloned mods), `release.sh` (build a release) |
 | `docs/` | | `install.md`, `using.md`, `context.md`, `configuration.md`, `troubleshooting.md` (for users), `how-it-works.md` (design and contracts), `review.md` (design notes and known limitations) |
 | `LICENSE`, `THIRD-PARTY.md` | | MIT for tether; the copied Herdr mods keep Apache-2.0 |
-| `tests/`, `test.sh` | | Unit tests (no Herdr or Claude needed), the installer tests, and `test_docs.py`: it fails when a command, an environment variable or a mod is missing from the docs (README and `docs/`), the agent skill or the generated help |
+| `tests/` | | Unit tests (no Herdr or Claude needed), one file per module of `lib/tetherlib` plus `helpers.py`; the installer tests; `test_modules.py` (the package holds together); and `test_docs.py`: it fails when a command, an environment variable or a mod is missing from the docs (README and `docs/`), the agent skill or the generated help |
 
 ## Not in this repository, on purpose
 
@@ -411,13 +411,13 @@ only while the shipped pieces they point at still exist.
 
 - **The `cloned_from` version in a mod is a label, not a pin.** Herdr records the version a clone started
   from, and says clones "are yours and never updated". Nothing here breaks on a Herdr upgrade by itself, but
-  the clones will not pick up upstream fixes either. `./sync.sh upstream` is the way to notice.
+  the clones will not pick up upstream fixes either. `scripts/herdr-drift.sh` is the way to notice.
 - **Names:** the layout is `tether` and every custom mod is `tether-…`, so they are recognisable and cannot
   collide with a mod Herdr ships later.
 - **The mods rely on assets and mods Herdr ships:** `mods/workspace-chrome/{plus,clock,branch}.svg`,
   `icons/shell.svg`, and the `workspace-chrome`, `agents`, `tabs`, `pane`, `worktree` mods that `tether`
   and `new-menu` reference. A Herdr upgrade that renames those would break the mods; `herdr-app check` and
-  `./sync.sh upstream` will show it.
+  `scripts/herdr-drift.sh` will show it.
 - Herdr does not re-run commands after a reboot: terminals come back as plain shells. Run `tether` in each,
   or `tether open <space>` once to restore the whole space.
 - Claude deletes old transcripts after its retention period (30 days by default). With a backup,

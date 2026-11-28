@@ -134,9 +134,12 @@ class Installer(Sandbox):
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("releases.herdr.dev", r.stdout + r.stderr)
 
-    def test_an_older_herdr_gets_a_warning(self):
-        r = self.run_install(FAKE_HERDR_VERSION="0.1.2")
-        self.assertIn("older than", r.stderr)
+    def test_the_herdr_version_number_is_not_what_decides_compatibility(self):
+        for version in ("0.1.2", "9.9.9"):
+            r = self.run_install(FAKE_HERDR_VERSION=version)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertNotIn("older than", r.stderr)
+            self.assertNotIn("tested with", r.stdout + r.stderr)
 
     def test_uninstall_removes_what_was_installed_and_keeps_the_data(self):
         self.assertEqual(self.run_install().returncode, 0)

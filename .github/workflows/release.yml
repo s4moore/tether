@@ -14,7 +14,7 @@ jobs:
       - name: Unit tests
         run: python3 -m unittest discover -s tests
       - name: Build the release files
-        run: ./release.sh
+        run: scripts/release.sh
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}

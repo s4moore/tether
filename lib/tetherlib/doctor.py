@@ -36,6 +36,15 @@ def doctor(args):
     add("ok" if live is not None else "warn", "Herdr is running" if live is not None else "Herdr is not running",
         "" if live is not None else "start it: herdr-app (some checks below are skipped)")
 
+    if core.find_tool("herdr-app"):
+        # compatibility is checked by asking Herdr for what tether uses, not by comparing version numbers
+        try:
+            problems = herdr.contract_problems(spaces=list(live.values()) if live is not None else [])
+        except Exception as err:  # noqa: BLE001 - an unreadable answer is itself the finding
+            problems = [f"could not ask Herdr ({type(err).__name__})"]
+        add("ok" if not problems else "bad", "Herdr offers what tether uses" if not problems else "Herdr does not match what tether expects: " + "; ".join(problems),
+            "" if not problems else "this Herdr may be newer or older than tether supports: `herdr-app --version`, then please open an issue with the output of `tether doctor`")
+
     mods = os.path.expanduser("~/.config/herdr-app/mods")
     missing = [m for m in ("tether-spaces", "tether-new-space", "tether-history", "tether-menu",
                            "tether-backups", "tether-search", "tether-tabs", "tether-new-menu")

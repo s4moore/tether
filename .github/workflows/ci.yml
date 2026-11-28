@@ -14,7 +14,7 @@ jobs:
       - name: Unit tests (no Herdr needed)
         run: python3 -m unittest discover -s tests
       - name: Shell syntax
-        run: bash -n install.sh && bash -n release.sh && bash -n sync.sh && bash -n test.sh && sh -n get.sh
+        run: bash -n install.sh && bash -n scripts/release.sh && bash -n scripts/gen-help.sh && bash -n scripts/herdr-drift.sh && bash -n scripts/test.sh && sh -n get.sh
       - name: ShellCheck
         if: matrix.os == 'ubuntu-latest'
-        run: shellcheck install.sh get.sh release.sh
+        run: shellcheck install.sh get.sh scripts/release.sh scripts/gen-help.sh

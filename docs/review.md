@@ -107,7 +107,7 @@ Why tether is built the way it is, what has been checked, and where it can let y
 ## Mods and UI
 
 - Four mods are copies of shipped Herdr mods (`tether-spaces`, `tether-menu`, `tether-tabs`, `tether-new-menu`) and the layout is a
-  copy of Herdr's `main`; they do not follow Herdr upgrades. `./sync.sh upstream` shows the drift and `./sync.sh shipped` checks
+  copy of Herdr's `main`; they do not follow Herdr upgrades. `scripts/herdr-drift.sh` shows the drift and `scripts/herdr-drift.sh --shipped` checks
   that no shipped mod was edited in place.
 - **Async work in a popup must run in `cx.spawn`.** A click handler's context is invalidated after an `await`; a popup that
   notified through it stayed on "Searching…" forever while the CLI was fine. Unit tests cannot see this class of bug.
@@ -138,5 +138,5 @@ Why tether is built the way it is, what has been checked, and where it can let y
 5. Retire the pre-terminal link format (`agents` per space, `.v1-backup`, adoption logic) once every machine has been migrated.
 6. One implementation of the "space name must be unique" rule (it exists in both the dialog and the CLI); the dialog could ask
    `tether`.
-7. CI that runs `./test.sh`; `tests/test_docs.py` already fails if a command, environment variable or mod is undocumented.
-8. Make `doctor` run `herdr-app check` on the mods (today only `./test.sh` does).
+7. CI that runs `scripts/test.sh`; `tests/test_docs.py` already fails if a command, environment variable or mod is undocumented.
+8. Make `doctor` run `herdr-app check` on the mods (today only `scripts/test.sh` does).

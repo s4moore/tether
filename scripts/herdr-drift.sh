@@ -1,41 +1,10 @@
 #!/usr/bin/env bash
-# This repo is the source of truth; install.sh pushes it to the machine.
-#   ./sync.sh meta   regenerate docs/tether-help.txt (the test-suite fails when it is stale)
-#   ./sync.sh upstream  show how each cloned mod/layout differs from the shipped one it was cloned from
-#                    (run after upgrading herdr-app to see what upstream changed under you)
-#   ./sync.sh shipped   verify no shipped Herdr mod was edited in place (also part of `upstream`)
-#   ./sync.sh pull   copy edits made directly on this machine back into the repo (then meta).
-#                    Refuses if the repo has uncommitted changes, so it can never overwrite work.
+# After upgrading herdr-app: show how each cloned mod and the layout differ from the Herdr originals they were cloned from (what
+# upstream changed under us), and check that no mod Herdr ships was edited in place.
+#   scripts/herdr-drift.sh            both
+#   scripts/herdr-drift.sh --shipped  only the check for shipped mods edited in place
 set -euo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HERDR_DIR="${HERDR_DIR:-$HOME/.config/herdr-app}"
-BIN_DIR="${BIN_DIR:-$HOME/.local/bin}"
-LIB_DIR="${LIB_DIR:-$HOME/.local/lib}"
-SKILL_ROOT="${SKILL_ROOT:-$HOME/.claude/skills}"
-
-meta() {
-  "$HERE/bin/tether" --help > "$HERE/docs/tether-help.txt" 2>&1 || true
-  echo "regenerated docs/tether-help.txt"
-}
-
-pull() {
-  if [ -n "$(git -C "$HERE" status --porcelain)" ]; then
-    echo "error: the repo has uncommitted changes; commit or stash them first (pull would overwrite files)" >&2
-    exit 1
-  fi
-  cp "$BIN_DIR/tether" "$HERE/bin/tether"
-  for f in "$LIB_DIR"/tetherlib/*.py; do cp "$f" "$HERE/lib/tetherlib/"; done
-  cp "$SKILL_ROOT/tether/SKILL.md" "$HERE/skill/SKILL.md"
-  cp "$HERDR_DIR/layouts/tether.json" "$HERE/herdr/layouts/tether.json"
-  for src in "$HERE"/herdr/mods/*/; do
-    name="$(basename "$src")"
-    for f in main.js mod.json trash.svg; do
-      [ -f "$HERDR_DIR/mods/$name/$f" ] && cp "$HERDR_DIR/mods/$name/$f" "$src$f"
-    done
-  done
-  meta
-  echo "pulled; review with: git -C '$HERE' diff --stat"
-}
 
 upstream() {
   # clone -> shipped original (the clone's mod.json / layout also records the version it was cloned from)
@@ -78,10 +47,10 @@ print(f"=== shipped mods: {checked} file(s) match Herdr's hashes" + (f"; DIFFERE
 PY
 }
 
-case "${1:-}" in
-  upstream) upstream ;;
-  shipped) shipped ;;
-  meta) meta ;;
-  pull) pull ;;
-  *) echo "usage: $0 meta|pull|upstream|shipped" >&2; exit 2 ;;
-esac
+if [ "${1:-}" = "--shipped" ]; then
+  shipped
+elif [ -z "${1:-}" ]; then
+  upstream
+else
+  echo "usage: $0 [--shipped]" >&2; exit 2
+fi

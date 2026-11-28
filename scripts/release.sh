@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Maintainers: build the release files for the version in VERSION from the committed tree.
-#   ./release.sh        -> dist/tether-<version>.tar.gz and dist/tether-<version>.tar.gz.sha256
+#   scripts/release.sh        -> dist/tether-<version>.tar.gz and dist/tether-<version>.tar.gz.sha256
 # Then:  git tag v<version> && git push origin v<version>   (the release workflow publishes them), or by hand:
 #   gh release create v<version> dist/* get.sh --title "tether <version>" --notes "..."
 set -euo pipefail
-cd "$(dirname "${BASH_SOURCE[0]}")"
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
 V="$(cat VERSION)"
 grep -q "^__version__ = \"$V\"" lib/tetherlib/core.py || { echo "VERSION ($V) and lib/tetherlib/core.py __version__ disagree" >&2; exit 1; }
 [ -z "$(git status --porcelain --untracked-files=no)" ] || { echo "the working tree has uncommitted changes: commit first" >&2; exit 1; }

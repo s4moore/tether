@@ -21,7 +21,7 @@ Each mod's `mod.json` records the Herdr mod and version it was copied from (`clo
 
 The changes are what tether needs: session links and a restore, history, backup and search buttons, a
 space menu with Fork, Back up and Export and a one-step Archive, a settings button, and starting Claude Code or Copilot through
-tether, Continue in Copilot / Claude in the tab menu, and Learn from this space in the space menu. Run `./sync.sh upstream` (with Herdr installed) to see exactly how each copy differs from the
+tether, Continue in Copilot / Claude in the tab menu, and Learn from this space in the space menu. Run `scripts/herdr-drift.sh` (with Herdr installed) to see exactly how each copy differs from the
 shipped original.
 
 The `workspace-chrome` icons and the other Herdr mods the layout refers to (agents, changes, files, pane and

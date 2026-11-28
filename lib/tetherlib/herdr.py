@@ -122,6 +122,40 @@ def herdr_do(args):
     return made
 
 
+# What tether needs from Herdr's command line: the commands it runs through `herdr-app do`, and the options it passes them.
+REQUIRED_COMMANDS = {"space.new": ("name", "folder", "tab"), "tab.new": ("space", "folder", "name"), "space.close": ("id", "confirmed")}
+# The fields of `herdr-app ls` that tether reads, by level.
+LS_FIELDS = {"space": ("id", "name", "tabs"), "tab": ("id", "name", "terminals"), "terminal": ("terminal",)}
+
+
+def contract_problems(commands=None, spaces=None):
+    """Whether this Herdr offers what tether uses: each command and option in REQUIRED_COMMANDS, and the fields of `herdr-app ls` that tether
+    reads. -> a list of plain-language problems, empty when it fits. Checks the behaviour instead of comparing version numbers.
+    commands and spaces are what `herdr-app commands` and `herdr-app ls` gave (read here when not passed)."""
+    problems = []
+    if commands is None:
+        app = core.find_tool("herdr-app")
+        r = subprocess.run([app, "commands"], capture_output=True, text=True, timeout=15)
+        try:
+            commands = json.loads(r.stdout)
+        except ValueError:
+            return ["`herdr-app commands` did not answer with a list of commands"]
+    have = {c.get("name"): {a.get("name") for a in c.get("args", []) if isinstance(a, dict)} for c in commands if isinstance(c, dict)}
+    for command, options in REQUIRED_COMMANDS.items():
+        if command not in have:
+            problems.append(f"Herdr has no `{command}` command")
+        else:
+            problems += [f"`{command}` no longer takes --{o}" for o in options if o not in have[command]]
+    if spaces is None:
+        spaces = herdr_ls()
+    seen = {"space": spaces[:1], "tab": [t for s in spaces for t in (s.get("tabs") or [])][:1],
+            "terminal": [x for s in spaces for t in (s.get("tabs") or []) for x in (t.get("terminals") or [])][:1]}
+    for level, fields in LS_FIELDS.items():  # only a level that has an example can be checked; an empty Herdr proves nothing
+        for item in seen[level]:
+            problems += [f"`herdr-app ls` {level}s have no `{f}`" for f in fields if f not in item]
+    return problems
+
+
 def terminal_in_tab(tab_id):
     """The one tether-linked terminal in a Herdr tab, as a Where (for `continue --tab`, used by the tab menu)."""
     ensure_app()

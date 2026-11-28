@@ -6,7 +6,7 @@ The short version is in the [README](../README.md#install). This page has the de
 
 | Needed | Why | Notes |
 |---|---|---|
-| macOS | what tether is tested on (see *Tested with*) | Linux is untested; tether uses `fcntl` and `ps`, so Windows is out. Import via the UI uses a macOS file chooser |
+| macOS | what tether is developed on (see *Developed and tried with*) | Linux is untested; tether uses `fcntl` and `ps`, so Windows is out. Import via the UI uses a macOS file chooser |
 | [Herdr](https://herdr.dev/download) | spaces, `herdr-app`, `hc` | `curl -fsSL https://releases.herdr.dev/app/install.sh \| sh`. Launch it once (it creates its config folder), then quit it. The installer shows this command if Herdr is missing |
 | Python 3.9+ | runs `tether` (standard library only) | the macOS system `python3` is fine; on a new Mac the first use prompts to install the Xcode Command Line Tools (`xcode-select --install`) |
 | `claude` CLI | the agent | `copilot` is optional (only `tether copilot` needs it) |
@@ -22,7 +22,7 @@ curl -fsSL https://raw.githubusercontent.com/s4moore/tether/main/get.sh | sh
 
 Quit Herdr first: it rewrites its `shared.json` when it quits, and the installer refuses to run while it is
 open. The script downloads the release tarball, **checks it against the published SHA-256**, and runs the
-installer from it. For a specific version: `curl -fsSL .../get.sh | TETHER_VERSION=0.5.0 sh`.
+installer from it. For a specific version: `curl -fsSL .../get.sh | TETHER_VERSION=0.5.1 sh`.
 
 **Prefer to read it first?** Piping a script into a shell asks you to trust it. Either read `get.sh`
 ([source](../get.sh)) and `install.sh`, or do it by hand:
@@ -58,7 +58,7 @@ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
 | `~/.tether-backups/<time>/` | a copy of every file it replaced (the newest 5 runs are kept; identical files are not copied again) |
 
 It checks every mod with `herdr-app check`; **if one does not load, it puts your previous mods, layout and
-setting back** and tells you. It also warns if your Herdr is not the version tether was tested with. It asks
+setting back** and tells you. It does not judge your Herdr by its version number: the mod load check above is the test. It asks
 two optional questions on the terminal (never when there is none, so `curl | sh` in a script asks nothing;
 answer ahead of time with `TETHER_AUTO_BACKUP=yes` and `CLAUDE_RETENTION_DAYS=365`). It is safe to re-run.
 
@@ -83,8 +83,9 @@ takes the `"layout"` line out of `shared.json` so Herdr uses its own again. It *
 yourself if you will not use tether again. A `cleanupPeriodDays` you let it set stays in
 `~/.claude/settings.json`.
 
-**Tested with:** Herdr 0.1.16, macOS, Python 3.9, Claude Code 2.1. The mods are modified copies of Herdr's own
-(from 0.1.15 and 0.1.16), so a much newer Herdr may change things underneath them: the installer warns, and
-`./install.sh --uninstall` puts Herdr's own sidebar back.
+**Developed and tried with:** Herdr 0.1.16 to 0.1.18, macOS, Python 3.9, Claude Code 2.1. The mods are modified copies of Herdr's own (from
+0.1.15 and 0.1.16), so a newer Herdr may change things underneath them. tether does not compare version numbers to find out: the installer
+runs `herdr-app check` on each mod and puts your previous ones back if one does not load, and `tether doctor` checks that Herdr still has the
+commands and the `ls` fields tether uses (it names whatever is missing). `./install.sh --uninstall` puts Herdr's own sidebar back.
 
 Trouble? See [troubleshooting](troubleshooting.md).

@@ -23,8 +23,6 @@ STAMP="$(date +%Y%m%d-%H%M%S)"
 BACKUP_ROOT="$HOME/.tether-backups"
 BACKUP_DIR="${BACKUP_DIR:-$BACKUP_ROOT/$STAMP}"
 LAYOUT_NAME="tether"
-HERDR_TESTED="0.1.16"   # the Herdr version the mods were last checked against
-HERDR_MIN="0.1.15"      # the oldest version their cloned originals come from
 HERDR_INSTALL_URL="https://releases.herdr.dev/app/install.sh"
 KEEP_BACKUPS=5
 
@@ -132,7 +130,7 @@ if [ "$MODE" = uninstall ]; then
 fi
 
 # ---------------------------------------------------------------------------------------- install
-for f in bin/tether lib/tetherlib/cli.py skill/SKILL.md herdr/layouts/$LAYOUT_NAME.json; do
+for f in bin/tether lib/tetherlib/cli.py skills/tether/SKILL.md herdr/layouts/$LAYOUT_NAME.json; do
   [ -f "$HERE/$f" ] || die "$HERE/$f not found. Run this from the tether download (or a clone), or use get.sh."
 done
 VERSION="$(cat "$HERE/VERSION" 2>/dev/null || echo unknown)"
@@ -158,17 +156,11 @@ if not isinstance(json.load(open(sys.argv[1])), dict):
 PY
 fi
 
-# Herdr version: the mods are copies of Herdr's own mods from the versions below.
+# Compatibility is not judged by version number: after the mods are copied, `herdr-app check` asks this Herdr whether each one loads (and the
+# previous ones are put back if not), and `tether doctor` checks that the commands tether uses are there. The version is only for messages.
 HERDR_VERSION=""
 if command -v herdr-app >/dev/null; then
   HERDR_VERSION="$(herdr-app --version 2>/dev/null | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)"
-fi
-if [ -z "$HERDR_VERSION" ]; then
-  warn "could not read the Herdr version; tether was tested with Herdr $HERDR_TESTED"
-elif python3 -c 'import sys; v=lambda s: tuple(map(int, s.split("."))); sys.exit(0 if v(sys.argv[1]) >= v(sys.argv[2]) else 1)' "$HERDR_VERSION" "$HERDR_MIN"; then
-  [ "$HERDR_VERSION" = "$HERDR_TESTED" ] || echo "note: tether was tested with Herdr $HERDR_TESTED; you have $HERDR_VERSION. If the sidebar looks wrong afterwards, ./install.sh --uninstall puts Herdr's own back."
-else
-  warn "Herdr $HERDR_VERSION is older than $HERDR_MIN, which the tether mods are based on; they may not load. Update Herdr first."
 fi
 
 say "tether $VERSION -> $BIN_DIR (the code is the tetherlib package in $LIB_DIR/tetherlib)"
@@ -184,8 +176,8 @@ cp "$HERE/bin/tether" "$BIN_DIR/tether"
 chmod +x "$BIN_DIR/tether"
 
 # Two skills: tether (the commands) and tether-context (looking up and remembering facts about your environment).
-for pair in "skill:tether" "skill-context:tether-context"; do
-  src_dir="${pair%%:*}"; skill="${pair##*:}"
+for skill in tether tether-context; do
+  src_dir="skills/$skill"
   [ -f "$HERE/$src_dir/SKILL.md" ] || continue
   say "Claude skill -> $SKILL_ROOT/$skill"
   mkdir -p "$SKILL_ROOT/$skill"

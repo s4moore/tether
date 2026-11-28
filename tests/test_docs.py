@@ -31,7 +31,7 @@ ENV_VARS = sorted(set("TETHER_" + n for n in re.findall(r'\benv\("([A-Z_]+)"\)',
 class DocsStayInSync(unittest.TestCase):
     def test_every_command_is_in_the_readme_the_skill_and_the_help(self):
         self.assertGreater(len(COMMANDS), 10, "the command scan found too little: update the regex")
-        for doc, text in (("the README and docs/", user_docs()), ("skill/SKILL.md", read("skill", "SKILL.md")),
+        for doc, text in (("the README and docs/", user_docs()), ("skills/tether/SKILL.md", read("skills", "tether", "SKILL.md")),
                           ("docs/tether-help.txt", read("docs", "tether-help.txt"))):
             missing = [c for c in COMMANDS if f"tether {c}" not in text]
             self.assertEqual(missing, [], f"{doc} does not mention these commands (add them): {missing}")
@@ -39,7 +39,7 @@ class DocsStayInSync(unittest.TestCase):
     def test_every_environment_variable_is_in_the_help_the_readme_and_the_skill(self):
         self.assertGreater(len(ENV_VARS), 5, "the env var scan found too little: update the regex")
         for doc, text in (("docs/tether-help.txt", read("docs", "tether-help.txt")), ("the README and docs/", user_docs()),
-                          ("skill/SKILL.md", read("skill", "SKILL.md"))):
+                          ("skills/tether/SKILL.md", read("skills", "tether", "SKILL.md"))):
             missing = [v for v in ENV_VARS if v not in text]
             self.assertEqual(missing, [], f"{doc} does not mention these environment variables: {missing}")
 
@@ -50,7 +50,7 @@ class DocsStayInSync(unittest.TestCase):
 
     def test_no_machine_specific_paths_ship(self):
         banned = re.compile(r"/Users/(?!me/)[a-z]+/")
-        for rel in ("README.md", "CONTRIBUTING.md", "skill/SKILL.md", "bin/tether", "install.sh", *("lib/tetherlib/" + f for f in sorted(os.listdir(LIB)) if f.endswith(".py")),
+        for rel in ("README.md", "CONTRIBUTING.md", "skills/tether/SKILL.md", "bin/tether", "install.sh", *("lib/tetherlib/" + f for f in sorted(os.listdir(LIB)) if f.endswith(".py")),
                     *("docs/" + f for f in sorted(os.listdir(os.path.join(ROOT, "docs"))) if f.endswith(".md"))):
             hit = banned.search(read(*rel.split("/")))
             self.assertIsNone(hit, f"{rel} contains {hit.group(0) if hit else ''!r}")
@@ -59,11 +59,11 @@ class DocsStayInSync(unittest.TestCase):
         out = subprocess.run([sys.executable, os.path.join(ROOT, "bin", "tether"), "--help"],
                              capture_output=True, text=True).stdout
         self.assertEqual(out.strip(), read("docs", "tether-help.txt").strip(),
-                         "docs/tether-help.txt is stale: run ./sync.sh meta")
+                         "docs/tether-help.txt is stale: run scripts/gen-help.sh")
 
     def test_every_mod_is_described_in_the_docs(self):
         mods = sorted(d for d in os.listdir(os.path.join(ROOT, "herdr", "mods")) if d.startswith("tether-"))
-        text = read("docs", "how-it-works.md") + read("skill", "SKILL.md")
+        text = read("docs", "how-it-works.md") + read("skills", "tether", "SKILL.md")
         missing = [m for m in mods if m not in text]
         self.assertEqual(missing, [], f"mods missing from docs/how-it-works.md or the skill: {missing}")
 
